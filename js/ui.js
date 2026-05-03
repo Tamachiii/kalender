@@ -1,3 +1,4 @@
+import { FALLBACK_TAG_COLOR, FALLBACK_TAG_NAME } from './config.js';
 import {
   addDays,
   dateKey,
@@ -13,12 +14,14 @@ import {
   toLocalInputValue,
 } from './dateUtils.js';
 import {
-  allTags,
   canEditCalendar,
-  eventTagKey,
+  defaultTagFor,
+  eventTag,
+  fallbackTag,
   findTag,
   state,
-  visibleEvents,
+  tagsForCalendar,
+  visibleTags,
 } from './store.js';
 
 const els = {};
@@ -31,7 +34,7 @@ export function bindElements() {
     'login-error',
     'email',
     'password',
-  'user-email',
+    'user-email',
     'account-email',
     'calendar-list',
     'archived-toggle',
@@ -58,10 +61,8 @@ export function bindElements() {
     'event-description',
     'event-start',
     'event-end',
-    'event-category',
     'event-tag-id',
     'event-tag-options',
-    'event-color',
     'event-reminder',
     'event-error',
     'delete-event-btn',
@@ -74,10 +75,18 @@ export function bindElements() {
     'tag-form',
     'tag-modal-title',
     'tag-id',
+    'tag-calendar',
     'tag-name',
     'tag-color',
     'tag-error',
     'delete-tag-btn',
+    'tag-delete-modal',
+    'tag-delete-form',
+    'tag-delete-title',
+    'tag-delete-id',
+    'tag-delete-summary',
+    'tag-delete-error',
+    'tag-delete-confirm-btn',
     'share-modal',
     'share-form',
     'share-title',
@@ -140,7 +149,7 @@ export function renderAll() {
   renderCalendars();
   renderTags();
   renderQuickAddTemplates();
-  renderCategoryFilters();
+  renderTagFilters();
   renderCalendar();
   renderWeeklyOverview();
   if (!els.eventModal.open) {
@@ -191,14 +200,17 @@ export function renderCalendars() {
   });
 }
 
-export function renderCategoryFilters() {
+// Filter chips show one entry per tag visible in the current calendar
+// scope. When state.activeCalendarId is set this is just that calendar's
+// tags; otherwise the union across visible calendars.
+export function renderTagFilters() {
   els.categoryFilters.innerHTML = '';
-  allTags().forEach((tag) => {
+  visibleTags().forEach((tag) => {
     const label = document.createElement('label');
     label.className = 'category-chip';
     label.innerHTML = `
       <input type="checkbox" value="${tag.id}" ${
-        state.selectedCategories.has(tag.id) ? 'checked' : ''
+        state.selectedTagIds.has(tag.id) ? 'checked' : ''
       } />
       <span style="--category-color:${tag.color}"></span>
       ${escapeHtml(tag.name)}
@@ -207,26 +219,55 @@ export function renderCategoryFilters() {
   });
 }
 
+// Settings → Tags. Grouped by calendar so the user can see at a glance which
+// tags belong where. Only calendars where the user can edit get an "Add"
+// affordance — viewers can read but not modify.
 export function renderTags() {
   els.tagList.innerHTML = '';
+  const editableCalendars = state.calendars.filter(
+    (calendar) => !calendar.archived_at && canEditCalendar(calendar.id),
+  );
 
-  if (!state.tags.length) {
-    els.tagList.innerHTML = '<p class="empty-note">No custom tags yet.</p>';
+  if (!editableCalendars.length) {
+    els.tagList.innerHTML =
+      '<p class="empty-note">You need an editable calendar to manage tags.</p>';
     return;
   }
 
-  state.tags.forEach((tag) => {
-    const row = document.createElement('div');
-    row.className = 'tag-list-item';
-    row.dataset.tagId = tag.id;
-    row.innerHTML = `
-      <span class="tag-dot" style="--tag-color:${tag.color}"></span>
-      <strong>${escapeHtml(tag.name)}</strong>
-      <button class="tag-edit" type="button">Edit</button>
-      <button class="tag-delete" type="button">Delete</button>
-    `;
-    els.tagList.append(row);
-  });
+  state.calendars
+    .filter((calendar) => !calendar.archived_at)
+    .forEach((calendar) => {
+      const calendarTags = tagsForCalendar(calendar.id);
+      const editable = canEditCalendar(calendar.id);
+
+      const group = document.createElement('section');
+      group.className = 'tag-group';
+      group.innerHTML = `
+        <header class="tag-group-header">
+          <strong>${escapeHtml(calendar.name)}</strong>
+          ${editable ? `<button class="ghost-action tag-group-add" type="button" data-tag-add-calendar-id="${calendar.id}">+ Add tag</button>` : '<span class="role-pill">view only</span>'}
+        </header>
+        ${
+          calendarTags.length
+            ? calendarTags
+                .map(
+                  (tag) => `
+                    <div class="tag-list-item" data-tag-id="${tag.id}">
+                      <span class="tag-dot" style="--tag-color:${tag.color}"></span>
+                      <strong>${escapeHtml(tag.name)}</strong>
+                      ${editable ? `
+                        <button class="tag-edit" type="button">Edit</button>
+                        <button class="tag-delete" type="button">Delete</button>
+                      ` : ''}
+                    </div>
+                  `,
+                )
+                .join('')
+            : '<p class="empty-note">No tags yet.</p>'
+        }
+      `;
+      els.tagList.append(group);
+    });
 }
 
 export function renderQuickAddTemplates() {
@@ -279,16 +320,13 @@ export function openQuickAddTemplateModal(template = null) {
   els.quickAddTemplateTitle.value = template?.default_title || '';
   els.quickAddTemplateDuration.value = template?.default_duration_minutes ?? 60;
 
-  els.quickAddTemplateTag.innerHTML =
-    '<option value="">No default tag</option>' +
-    allTags()
-      .map(
-        (tag) =>
-          `<option value="${escapeHtml(tag.id)}" ${
-            tag.id === template?.default_tag ? 'selected' : ''
-          }>${escapeHtml(tag.name)}</option>`,
-      )
-      .join('');
+  // Tag picker shows tags from the template's default_calendar_id, or every
+  // visible tag if no calendar is chosen. Re-runs when default_calendar_id
+  // changes (listener wired in app.js).
+  populateQuickAddTemplateTagOptions(
+    template?.default_calendar_id || '',
+    template?.default_tag || '',
+  );
 
   els.quickAddTemplateCalendar.innerHTML =
     '<option value="">No default calendar</option>' +
@@ -305,6 +343,24 @@ export function openQuickAddTemplateModal(template = null) {
   els.deleteQuickAddTemplateBtn.hidden = !template;
   els.quickAddTemplateError.textContent = '';
   els.quickAddTemplateModal.showModal();
+}
+
+export function populateQuickAddTemplateTagOptions(calendarId, selectedTagId = '') {
+  const tags = calendarId ? tagsForCalendar(calendarId) : state.tags;
+  els.quickAddTemplateTag.innerHTML =
+    '<option value="">No default tag</option>' +
+    tags
+      .map(
+        (tag) =>
+          `<option value="${escapeHtml(tag.id)}" ${
+            tag.id === selectedTagId ? 'selected' : ''
+          }>${escapeHtml(tag.name)}${calendarId ? '' : ` (${escapeHtml(calendarFor(tag)?.name || '?')})`}</option>`,
+      )
+      .join('');
+}
+
+function calendarFor(tag) {
+  return state.calendars.find((c) => c.id === tag.calendar_id) || null;
 }
 
 export function readQuickAddTemplateForm() {
@@ -345,7 +401,7 @@ export function renderCalendar() {
 
 export function renderWeeklyOverview() {
   const weekStart = startOfWeek(new Date());
-  const upcoming = visibleEvents()
+  const upcoming = visibleEventsForRender()
     .filter((event) => {
       const start = new Date(event.starts_at);
       return start >= weekStart && start < addDays(weekStart, 7);
@@ -391,13 +447,28 @@ export function renderEventCalendarOptions(selectedCalendarId = state.activeCale
     .join('');
 }
 
+// Render the chips for the event modal's tag picker. Shows tags from the
+// currently-selected calendar (event-calendar select). Defaults to the
+// event's own tag, otherwise the calendar's "Untagged".
 export function renderEventTagOptions(selectedTagId = null) {
-  let selected = selectedTagId || els.eventTagId.value || 'work';
-  if (!findTag(selected)) {
-    els.eventTagId.value = 'work';
-    selected = 'work';
+  const calendarId = els.eventCalendar.value || state.activeCalendarId;
+  const tags = tagsForCalendar(calendarId);
+  let selected = selectedTagId || els.eventTagId.value || '';
+  // If the previously-selected tag is from another calendar, fall back to
+  // the calendar's default. This keeps the picker honest when the user
+  // changes the event's calendar mid-edit.
+  if (!selected || !tags.some((tag) => tag.id === selected)) {
+    selected = defaultTagFor(calendarId)?.id || '';
+    els.eventTagId.value = selected;
   }
-  els.eventTagOptions.innerHTML = allTags()
+  console.log('[tag] render picker', { calendarId, selected, tagCount: tags.length });
+
+  if (!tags.length) {
+    els.eventTagOptions.innerHTML =
+      '<p class="empty-note">No tags for this calendar yet. Create one in Settings.</p>';
+    return;
+  }
+  els.eventTagOptions.innerHTML = tags
     .map(
       (tag) => `
         <button
@@ -417,8 +488,9 @@ export function renderEventTagOptions(selectedTagId = null) {
 
 export function openEventModal(event = null, date = null, draft = {}) {
   const writableCalendar =
-    state.calendars.find((calendar) => calendar.id === state.activeCalendarId && canEditCalendar(calendar.id)) ||
-    state.calendars.find((calendar) => canEditCalendar(calendar.id));
+    state.calendars.find(
+      (calendar) => calendar.id === state.activeCalendarId && canEditCalendar(calendar.id),
+    ) || state.calendars.find((calendar) => canEditCalendar(calendar.id));
 
   if (!event && !writableCalendar) {
     showToast('You only have viewer access to the selected calendars.');
@@ -437,14 +509,24 @@ export function openEventModal(event = null, date = null, draft = {}) {
       : new Date(start.getTime() + 60 * 60 * 1000);
 
   els.eventModalTitle.textContent = event ? 'Edit event' : 'New event';
-  renderEventCalendarOptions(event?.calendar_id || draft.calendar_id || writableCalendar.id);
+  const calendarId = event?.calendar_id || draft.calendar_id || writableCalendar.id;
+  renderEventCalendarOptions(calendarId);
   els.eventId.value = event?.id || '';
-  els.eventCalendar.value = event?.calendar_id || draft.calendar_id || writableCalendar.id;
+  els.eventCalendar.value = calendarId;
   els.eventTitle.value = event?.title || draft.title || '';
   els.eventDescription.value = event?.description || draft.description || '';
   els.eventStart.value = toLocalInputValue(start);
   els.eventEnd.value = toLocalInputValue(end);
-  selectEventTag(event ? eventTagKey(event) : draft.tag_id || draft.category || 'work');
+
+  // Pick the right tag id: the event's actual tag, the draft's tag (only if
+  // it's valid for the event's calendar), or the calendar's default Untagged.
+  const tagsHere = tagsForCalendar(calendarId);
+  let initialTagId = event?.tag_id || draft.tag_id || '';
+  if (!tagsHere.some((tag) => tag.id === initialTagId)) {
+    initialTagId = defaultTagFor(calendarId)?.id || '';
+  }
+  selectEventTag(initialTagId);
+
   els.eventReminder.checked = Boolean(event?.reminder_minutes || draft.reminder_minutes);
   const options = els.eventModal.querySelector('.event-options');
   if (options) {
@@ -460,33 +542,35 @@ export function readEventForm() {
   const existingEvent = id ? state.events.find((event) => event.id === id) : null;
   const startsAt = fromLocalInputValue(els.eventStart.value);
   const endsAt = fromLocalInputValue(els.eventEnd.value);
-  const selectedTag = findTag(els.eventTagId.value) || findTag('work');
+  const calendarId = els.eventCalendar.value;
+  const tagId = els.eventTagId.value;
 
-  if (endsAt <= startsAt) {
-    throw new Error('End time must be after start time.');
+  if (endsAt <= startsAt) throw new Error('End time must be after start time.');
+  if (!calendarId) throw new Error('Pick a calendar for this event.');
+  const tag = findTag(tagId);
+  if (!tag || tag.calendar_id !== calendarId) {
+    throw new Error('Pick a tag from the selected calendar.');
   }
 
   return {
     id,
-    calendar_id: els.eventCalendar.value,
+    calendar_id: calendarId,
     title: els.eventTitle.value.trim(),
     description: els.eventDescription.value.trim(),
     starts_at: startsAt.toISOString(),
     ends_at: endsAt.toISOString(),
-    category: selectedTag.builtIn ? selectedTag.id : 'work',
-    tag_id: selectedTag.builtIn ? null : selectedTag.id,
-    color: selectedTag.color,
+    tag_id: tagId,
     reminder_minutes: els.eventReminder.checked ? 15 : null,
     completed: Boolean(existingEvent?.completed),
   };
 }
 
 export function selectEventTag(tagId) {
-  const tag = findTag(tagId) || findTag('work');
-  els.eventTagId.value = tag.id;
-  els.eventCategory.value = tag.builtIn ? tag.id : 'work';
-  els.eventColor.value = tag.color;
-  renderEventTagOptions(tag.id);
+  const calendarId = els.eventCalendar.value || state.activeCalendarId;
+  const tag = findTag(tagId) || defaultTagFor(calendarId);
+  els.eventTagId.value = tag?.id || '';
+  console.log('[tag] selectEventTag', { tagId, resolved: tag?.id, calendarId });
+  renderEventTagOptions(tag?.id || null);
 }
 
 export function openDayDetail(date) {
@@ -505,7 +589,7 @@ let pendingTypePickerDate = null;
 export function openTypePicker(date = null) {
   pendingTypePickerDate = date ? new Date(date) : null;
   if (!els.typePickerModal) {
-    console.warn('[type-picker] modal element missing — falling back to event modal');
+    console.warn('[type-picker] modal element missing - falling back to event modal');
     openEventModal(null, pendingTypePickerDate);
     return;
   }
@@ -529,9 +613,30 @@ export function openCalendarModal() {
   els.calendarModal.showModal();
 }
 
-export function openTagModal(tag = null) {
+// New tag → calendar dropdown listed only with calendars the user can edit.
+// Existing tag → dropdown disabled (calendar is immutable; rename or delete
+// instead).
+export function openTagModal(tag = null, presetCalendarId = null) {
   els.tagModalTitle.textContent = tag ? 'Edit tag' : 'New tag';
   els.tagId.value = tag?.id || '';
+
+  const editableCalendars = state.calendars.filter(
+    (calendar) => !calendar.archived_at && canEditCalendar(calendar.id),
+  );
+
+  els.tagCalendar.innerHTML = editableCalendars
+    .map(
+      (calendar) =>
+        `<option value="${calendar.id}" ${
+          calendar.id === (tag?.calendar_id || presetCalendarId || state.activeCalendarId) ? 'selected' : ''
+        }>${escapeHtml(calendar.name)}</option>`,
+    )
+    .join('');
+
+  // Editing an existing tag: lock the calendar field so the user doesn't
+  // accidentally re-home a tag (which would also need to remap events).
+  els.tagCalendar.disabled = Boolean(tag);
+
   els.tagName.value = tag?.name || '';
   els.tagColor.value = tag?.color || '#92c5fc';
   els.deleteTagBtn.hidden = !tag;
@@ -542,11 +647,37 @@ export function openTagModal(tag = null) {
 export function readTagForm() {
   const name = els.tagName.value.trim();
   if (!name) throw new Error('Tag name is required.');
+  const calendarId = els.tagCalendar.value;
+  if (!calendarId) throw new Error('Pick a calendar for this tag.');
   return {
     id: els.tagId.value || null,
+    calendar_id: calendarId,
     name,
     color: els.tagColor.value,
   };
+}
+
+// Tag delete confirmation. Caller resolves the affected count and the
+// reassignment target ("Untagged" of this calendar) before showing.
+export function openTagDeleteModal({ tag, affectedCount, targetTagName }) {
+  els.tagDeleteId.value = tag.id;
+  els.tagDeleteTitle.textContent = `Delete "${tag.name}"?`;
+  if (affectedCount > 0) {
+    els.tagDeleteSummary.textContent =
+      `This will reassign ${affectedCount} event${affectedCount === 1 ? '' : 's'} to "${targetTagName}".`;
+  } else {
+    els.tagDeleteSummary.textContent = 'This tag is not in use.';
+  }
+  els.tagDeleteError.textContent = '';
+  els.tagDeleteModal.showModal();
+}
+
+export function closeTagDeleteModal() {
+  if (els.tagDeleteModal.open) els.tagDeleteModal.close();
+}
+
+export function setTagDeleteError(message) {
+  els.tagDeleteError.textContent = message || '';
 }
 
 export function openShareModal(calendarId) {
@@ -571,6 +702,21 @@ export function showToast(message) {
   }, 3200);
 }
 
+function visibleEventsForRender() {
+  const query = state.search.trim().toLowerCase();
+  return state.events.filter((event) => {
+    const matchesCalendar =
+      !state.activeCalendarId || event.calendar_id === state.activeCalendarId;
+    const matchesTag =
+      !event.tag_id || state.selectedTagIds.size === 0 || state.selectedTagIds.has(event.tag_id);
+    const matchesSearch =
+      !query ||
+      event.title.toLowerCase().includes(query) ||
+      (event.description || '').toLowerCase().includes(query);
+    return matchesCalendar && matchesTag && matchesSearch;
+  });
+}
+
 function renderMonth() {
   const today = new Date();
   const gridStart = startOfMonthGrid(state.selectedDate);
@@ -579,7 +725,7 @@ function renderMonth() {
   els.calendarGrid.className = 'calendar-grid month-grid';
   els.calendarGrid.innerHTML = weekHeaderHtml();
   days.forEach((day) => {
-    const dayEvents = visibleEvents().filter((event) => eventOccursOn(event, day));
+    const dayEvents = visibleEventsForRender().filter((event) => eventOccursOn(event, day));
     const cell = document.createElement('button');
     cell.type = 'button';
     cell.className = `month-cell${sameDay(day, today) ? ' today' : ''}${
@@ -608,11 +754,11 @@ function renderMonth() {
 
 function renderDayDetail(date) {
   const selected = startOfDay(date);
-  const dayEvents = visibleEvents().filter((event) => eventOccursOn(event, selected));
+  const dayEvents = visibleEventsForRender().filter((event) => eventOccursOn(event, selected));
   const activeEvents = dayEvents.filter((event) => !event.completed);
   const tasks = dayEvents.filter((event) => event.completed || event.title.toLowerCase().startsWith('task:'));
   const otherEvents = activeEvents.filter((event) => !event.title.toLowerCase().startsWith('task:'));
-  const upcoming = visibleEvents()
+  const upcoming = visibleEventsForRender()
     .filter((event) => new Date(event.starts_at) > endOfDay(selected))
     .slice(0, 3);
 
@@ -719,7 +865,7 @@ function renderWeek() {
 }
 
 function renderWeekListDay(day) {
-  const dayEvents = visibleEvents().filter((event) => eventOccursOn(event, day));
+  const dayEvents = visibleEventsForRender().filter((event) => eventOccursOn(event, day));
   const label = day.toLocaleDateString(undefined, {
     weekday: 'short',
     month: 'short',
@@ -770,7 +916,7 @@ function renderDay() {
 }
 
 function renderTimeColumn(day, label) {
-  const dayEvents = visibleEvents().filter((event) => eventOccursOn(event, day));
+  const dayEvents = visibleEventsForRender().filter((event) => eventOccursOn(event, day));
   return `
     <section class="time-column" data-date="${dateKey(day)}">
       <header>${label}</header>
@@ -829,11 +975,11 @@ function formatEventTime(event) {
 }
 
 function eventColor(event) {
-  return findTag(event.tag_id)?.color || findTag(event.category)?.color || event.color;
+  return eventTag(event).color || FALLBACK_TAG_COLOR;
 }
 
 function eventTagLabel(event) {
-  return findTag(event.tag_id)?.name || findTag(event.category)?.name || 'Tag';
+  return eventTag(event).name || FALLBACK_TAG_NAME;
 }
 
 function eventPillClass(event, day) {

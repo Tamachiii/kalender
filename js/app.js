@@ -1,4 +1,5 @@
 import {
+  countEventsUsingTag,
   createCalendar,
   createQuickAddTemplate,
   createTag,
@@ -12,47 +13,53 @@ import {
   fetchTags,
   getSession,
   onAuthStateChange,
+  reassignEventsTag,
   removeChannel,
   saveEvent,
   setEventCompleted,
   shareCalendar,
   signIn,
   signOut,
-  subscribeToEvents,
+  subscribeToWorkspace,
   updateCalendarArchive,
   updateQuickAddTemplate,
   updateTag,
 } from './api.js';
-import { addDays, addMonths, dateKey, startOfDay, startOfMonthGrid, startOfWeek } from './dateUtils.js';
+import { addDays, addMonths, startOfDay, startOfMonthGrid, startOfWeek } from './dateUtils.js';
 import {
   canEditCalendar,
+  defaultTagFor,
   findQuickAddTemplateByShortcut,
+  findTag,
   state,
   syncSelectedTags,
 } from './store.js';
 import {
   bindElements,
-  elements,
   closeDayDetail,
+  closeTagDeleteModal,
+  closeTypePicker,
+  consumePendingTypePickerDate,
+  elements,
   openCalendarModal,
   openDayDetail,
   openEventModal,
   openQuickAddTemplateModal,
-  openTagModal,
   openShareModal,
+  openTagDeleteModal,
+  openTagModal,
   openTypePicker,
-  closeTypePicker,
-  consumePendingTypePickerDate,
+  populateQuickAddTemplateTagOptions,
   readEventForm,
   readQuickAddTemplateForm,
   readTagForm,
   renderAll,
-  renderCalendar,
   renderCalendars,
   renderUser,
   selectEventTag,
   setActivePanel,
   setAuthenticatedView,
+  setTagDeleteError,
   showToast,
 } from './ui.js';
 
@@ -64,6 +71,7 @@ let resumeInFlight = false;
 let lastResumeAt = 0;
 let searchRenderTimer = 0;
 let refreshRequestId = 0;
+let tagDeleteInFlight = false;
 
 // Snapshot the state slices that any optimistic handler might touch, apply the
 // change, render, persist; on failure restore the snapshot and toast. Bumping
@@ -73,6 +81,7 @@ async function withOptimisticUpdate({ apply, persist, success, errorMessage }) {
   const previous = {
     events: state.events,
     calendars: state.calendars,
+    tags: state.tags,
     activeCalendarId: state.activeCalendarId,
   };
   refreshRequestId += 1;
@@ -86,6 +95,7 @@ async function withOptimisticUpdate({ apply, persist, success, errorMessage }) {
   } catch (error) {
     state.events = previous.events;
     state.calendars = previous.calendars;
+    state.tags = previous.tags;
     state.activeCalendarId = previous.activeCalendarId;
     renderAll();
     const message =
@@ -151,7 +161,7 @@ function bindUiEvents() {
   els.logoutBtn.addEventListener('click', signOut);
   els.themeToggle.addEventListener('click', toggleTheme);
   els.newCalendarBtn.addEventListener('click', openCalendarModal);
-  els.newTagBtn.addEventListener('click', () => openTagModal());
+  els.newTagBtn.addEventListener('click', () => openTagModal(null, state.activeCalendarId));
   els.prevBtn.addEventListener('click', () => movePeriod(-1));
   els.todayBtn.addEventListener('click', () => {
     state.selectedDate = new Date();
@@ -203,8 +213,8 @@ function bindUiEvents() {
 
   els.categoryFilters.addEventListener('change', (event) => {
     if (event.target.matches('input[type="checkbox"]')) {
-      if (event.target.checked) state.selectedCategories.add(event.target.value);
-      else state.selectedCategories.delete(event.target.value);
+      if (event.target.checked) state.selectedTagIds.add(event.target.value);
+      else state.selectedTagIds.delete(event.target.value);
       renderAll();
     }
   });
@@ -222,6 +232,14 @@ function bindUiEvents() {
     const chip = event.target.closest('[data-tag-id]');
     if (!chip) return;
     selectEventTag(chip.dataset.tagId);
+  });
+
+  // Re-render the event tag picker when the user changes the calendar
+  // dropdown — the previously-selected tag may not exist in the new calendar.
+  els.eventCalendar.addEventListener('change', () => {
+    const calendarId = els.eventCalendar.value;
+    const fallback = defaultTagFor(calendarId);
+    selectEventTag(fallback?.id || '');
   });
 
   els.calendarList.addEventListener('click', (event) => {
@@ -249,6 +267,7 @@ function bindUiEvents() {
     }
     state.activeCalendarId =
       state.activeCalendarId === item.dataset.calendarId ? null : item.dataset.calendarId;
+    syncSelectedTags();
     renderAll();
   });
 
@@ -259,10 +278,17 @@ function bindUiEvents() {
     event.preventDefault();
     state.activeCalendarId =
       state.activeCalendarId === item.dataset.calendarId ? null : item.dataset.calendarId;
+    syncSelectedTags();
     renderAll();
   });
 
   els.tagList.addEventListener('click', (event) => {
+    // Per-calendar "+ Add tag" affordance on the group header.
+    const addBtn = event.target.closest('[data-tag-add-calendar-id]');
+    if (addBtn) {
+      openTagModal(null, addBtn.dataset.tagAddCalendarId);
+      return;
+    }
     const row = event.target.closest('.tag-list-item');
     if (!row) return;
     const tag = state.tags.find((item) => item.id === row.dataset.tagId);
@@ -344,6 +370,7 @@ function bindUiEvents() {
   els.calendarForm.addEventListener('submit', handleCreateCalendar);
   els.tagForm.addEventListener('submit', handleSaveTag);
   els.deleteTagBtn.addEventListener('click', () => handleDeleteTag(els.tagId.value));
+  els.tagDeleteForm.addEventListener('submit', handleConfirmDeleteTag);
   els.shareForm.addEventListener('submit', handleShareCalendar);
 
   if (els.newQuickAddTemplateBtn) {
@@ -356,6 +383,13 @@ function bindUiEvents() {
     els.deleteQuickAddTemplateBtn.addEventListener('click', () =>
       handleDeleteQuickAddTemplate(els.quickAddTemplateId.value),
     );
+  }
+  // Refresh the template's tag dropdown when the calendar dropdown changes —
+  // tags only show for that calendar.
+  if (els.quickAddTemplateCalendar) {
+    els.quickAddTemplateCalendar.addEventListener('change', () => {
+      populateQuickAddTemplateTagOptions(els.quickAddTemplateCalendar.value);
+    });
   }
   if (els.quickAddTemplateList) {
     els.quickAddTemplateList.addEventListener('click', (event) => {
@@ -391,8 +425,8 @@ async function loadWorkspace() {
   state.calendars = calendars;
   state.tags = tags;
   state.quickAddTemplates = templates;
-  syncSelectedTags();
   state.activeCalendarId = state.calendars.find((calendar) => !calendar.archived_at)?.id || null;
+  syncSelectedTags();
   setActivePanel('calendar');
   await setupRealtime();
   await refreshEventsAndRender();
@@ -411,7 +445,8 @@ async function loadTagsSafely() {
   try {
     return await fetchTags();
   } catch (error) {
-    showToast('Custom tags need the latest Supabase migration.');
+    showToast('Run supabase/2026-05-calendar-scoped-tags.sql to enable per-calendar tags.');
+    console.warn('[tags] fetch failed', error);
     return [];
   }
 }
@@ -459,13 +494,23 @@ async function setupRealtime() {
   const calendarIds = state.calendars
     .filter((calendar) => !calendar.archived_at || state.showArchivedCalendars)
     .map((calendar) => calendar.id);
-  state.realtimeChannel = subscribeToEvents(
-    calendarIds,
-    async () => {
+  state.realtimeChannel = subscribeToWorkspace(calendarIds, {
+    onEventChange: async () => {
       await refreshEventsAndRender();
       showToast('Calendar updated');
     },
-  );
+    // Tag inserts/updates/deletes need to land in state before any subsequent
+    // event renders pick up the new color/name. Refetch tags then re-render.
+    onTagChange: async () => {
+      try {
+        state.tags = await fetchTags();
+        syncSelectedTags();
+        renderAll();
+      } catch (error) {
+        console.warn('[tags] refresh after realtime failed', error);
+      }
+    },
+  });
 }
 
 function eventRangeForView() {
@@ -597,11 +642,17 @@ async function handleSaveTag(event) {
   els.tagError.textContent = '';
   try {
     const tag = readTagForm();
+    if (!canEditCalendar(tag.calendar_id)) {
+      throw new Error('You need editor access to manage this calendar’s tags.');
+    }
+    let saved;
     if (tag.id) {
-      await updateTag(tag.id, tag);
+      saved = await updateTag(tag.id, { name: tag.name, color: tag.color });
+      console.log('[tags] update response', saved);
       showToast('Tag updated');
     } else {
-      await createTag(tag);
+      saved = await createTag(tag);
+      console.log('[tags] create response', saved);
       showToast('Tag created');
     }
     els.tagModal.close();
@@ -613,25 +664,79 @@ async function handleSaveTag(event) {
   }
 }
 
+// Two-step delete: confirmation modal first (with affected count + reassign
+// target). Confirmation handler does the actual reassignment + delete.
 async function handleDeleteTag(tagId) {
   const tag = state.tags.find((item) => item.id === tagId);
   if (!tag) return;
+  if (!canEditCalendar(tag.calendar_id)) {
+    showToast('You need editor access to delete this tag.');
+    return;
+  }
+  const target = defaultTagFor(tag.calendar_id);
+  if (target && target.id === tag.id) {
+    showToast('"Untagged" cannot be deleted — it is the per-calendar default.');
+    return;
+  }
 
-  const confirmed = window.confirm(
-    `Delete the "${tag.name}" tag? Events using it will keep their color but lose the tag link.`,
-  );
-  if (!confirmed) return;
-
+  // Authoritative count from the database (the local store filters by date
+  // range, so a client-side count would undercount older events).
+  let affected = 0;
   try {
-    await deleteTag(tagId);
+    affected = await countEventsUsingTag(tag.id);
+  } catch (error) {
+    console.warn('[tags] count failed, falling back to local', error);
+    affected = state.events.filter((item) => item.tag_id === tag.id).length;
+  }
+
+  openTagDeleteModal({
+    tag,
+    affectedCount: affected,
+    targetTagName: target?.name || 'Untagged',
+  });
+}
+
+async function handleConfirmDeleteTag(event) {
+  event.preventDefault();
+  if (tagDeleteInFlight) return;
+  const tagId = els.tagDeleteId.value;
+  const tag = state.tags.find((item) => item.id === tagId);
+  if (!tag) {
+    closeTagDeleteModal();
+    return;
+  }
+  const target = defaultTagFor(tag.calendar_id);
+  if (!target) {
+    setTagDeleteError(
+      'No "Untagged" tag found for this calendar. Re-run the migration before deleting.',
+    );
+    return;
+  }
+
+  tagDeleteInFlight = true;
+  setTagDeleteError('');
+  els.tagDeleteConfirmBtn.disabled = true;
+  try {
+    // Reassign first, then delete. With the cleanup migration applied,
+    // events.tag_id is on delete restrict — deleteTag would fail if any event
+    // still references this tag.
+    const reassigned = await reassignEventsTag(tag.id, target.id);
+    console.log('[tags] reassigned events', { from: tag.id, to: target.id, count: reassigned.length });
+    await deleteTag(tag.id);
+    console.log('[tags] deleted', tag.id);
+
     if (els.tagModal.open) els.tagModal.close();
+    closeTagDeleteModal();
     state.tags = await fetchTags();
     syncSelectedTags();
     await refreshEventsAndRender();
-    showToast('Tag deleted');
+    showToast(`Tag deleted${reassigned.length ? ` — ${reassigned.length} event${reassigned.length === 1 ? '' : 's'} reassigned to ${target.name}.` : '.'}`);
   } catch (error) {
-    if (els.tagModal.open) els.tagError.textContent = error.message;
-    else showToast(error.message);
+    console.warn('[tags] delete failed', error);
+    setTagDeleteError(error.message || 'Could not delete tag.');
+  } finally {
+    tagDeleteInFlight = false;
+    els.tagDeleteConfirmBtn.disabled = false;
   }
 }
 
@@ -1005,11 +1110,20 @@ function buildQuickAddDraft(parsed, template, fallbackDate) {
     if (cal && !cal.archived_at && canEditCalendar(cal.id)) calendarId = cal.id;
   }
 
+  // Tag default only carries through if it's still valid for the chosen
+  // calendar — templates are user-scoped so they can outlive the tag they
+  // pointed at.
+  let tagId = null;
+  if (template?.default_tag) {
+    const tag = findTag(template.default_tag);
+    if (tag && (!calendarId || tag.calendar_id === calendarId)) tagId = tag.id;
+  }
+
   return {
     title: parsed.title || template?.default_title || '',
     starts_at: start.toISOString(),
     ends_at: end.toISOString(),
-    tag_id: template?.default_tag || null,
+    tag_id: tagId,
     calendar_id: calendarId,
   };
 }
@@ -1129,11 +1243,11 @@ async function recoverAfterResume() {
     state.calendars = calendars;
     state.tags = tags;
     state.quickAddTemplates = templates;
-    syncSelectedTags();
     state.activeCalendarId =
       calendars.find((calendar) => calendar.id === activeCalendarId)?.id ||
       calendars[0]?.id ||
       null;
+    syncSelectedTags();
     setActivePanel(activePanel);
     await setupRealtime();
     await refreshEventsAndRender();

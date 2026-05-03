@@ -86,20 +86,26 @@ export async function updateCalendarArchive(id, archived) {
   return data;
 }
 
+// Returns every tag the signed-in user can see across all their member
+// calendars. RLS does the filtering; no client-side filter required.
 export async function fetchTags() {
   const { data, error } = await supabase
     .from('tags')
-    .select('*')
+    .select('id, calendar_id, user_id, name, color, created_at, updated_at')
     .order('created_at', { ascending: true });
 
   if (error) throw error;
   return data;
 }
 
-export async function createTag({ name, color }) {
+export async function createTag({ calendar_id, name, color }) {
+  if (!calendar_id) throw new Error('A tag must belong to a calendar.');
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+  if (userError) throw userError;
+
   const { data, error } = await supabase
     .from('tags')
-    .insert({ name, color })
+    .insert({ calendar_id, name, color, user_id: userData.user.id })
     .select()
     .single();
 
@@ -122,6 +128,34 @@ export async function updateTag(id, { name, color }) {
 export async function deleteTag(id) {
   const { error } = await supabase.from('tags').delete().eq('id', id);
   if (error) throw error;
+}
+
+// Bulk-reassign every event using `fromTagId` to `toTagId`. Used by the
+// delete-tag confirmation flow before the tag row is removed (the FK is
+// `on delete restrict` after the cleanup migration, so this must succeed
+// before deleteTag is called).
+export async function reassignEventsTag(fromTagId, toTagId) {
+  if (!fromTagId || !toTagId) throw new Error('Reassign requires both source and target tag ids.');
+  const { data, error } = await supabase
+    .from('events')
+    .update({ tag_id: toTagId })
+    .eq('tag_id', fromTagId)
+    .select('id');
+
+  if (error) throw error;
+  return data || [];
+}
+
+// Authoritative count of events using a tag. The store has a client-side
+// counter for quick UI feedback, but the confirmation modal calls this so
+// the user sees the same number an admin would see in the database.
+export async function countEventsUsingTag(tagId) {
+  const { count, error } = await supabase
+    .from('events')
+    .select('id', { count: 'exact', head: true })
+    .eq('tag_id', tagId);
+  if (error) throw error;
+  return count || 0;
 }
 
 // Graceful fallback like fetchCalendars: if quick_add_templates is missing
@@ -195,18 +229,19 @@ export async function fetchEvents(calendarIds, rangeStart, rangeEnd) {
 }
 
 export async function saveEvent(event) {
+  if (!event.tag_id) throw new Error('Pick a tag before saving the event.');
   const payload = {
     calendar_id: event.calendar_id,
     title: event.title,
     description: event.description,
     starts_at: event.starts_at,
     ends_at: event.ends_at,
-    color: event.color,
-    category: event.category,
-    tag_id: event.tag_id || null,
+    tag_id: event.tag_id,
     reminder_minutes: event.reminder_minutes,
     completed: Boolean(event.completed),
   };
+
+  console.log('[event] save payload', payload);
 
   if (event.id) {
     const { data, error } = await supabase
@@ -216,6 +251,7 @@ export async function saveEvent(event) {
       .select()
       .single();
     if (error) throw error;
+    console.log('[event] save response', data);
     return data;
   }
 
@@ -226,6 +262,7 @@ export async function saveEvent(event) {
     .single();
 
   if (error) throw error;
+  console.log('[event] save response', data);
   return data;
 }
 
@@ -246,10 +283,13 @@ export async function setEventCompleted(id, completed) {
   return data;
 }
 
-export function subscribeToEvents(calendarIds, callback) {
+// Subscribe to both events and tag changes for the visible calendar set.
+// One channel, one listener per (table, calendar_id) pair. Returns the
+// channel so the caller can pass it to removeChannel later.
+export function subscribeToWorkspace(calendarIds, callbacks) {
   if (!calendarIds.length) return null;
 
-  const channel = supabase.channel(`events:${calendarIds.sort().join(',')}`);
+  const channel = supabase.channel(`workspace:${calendarIds.sort().join(',')}`);
 
   calendarIds.forEach((calendarId) => {
     channel.on(
@@ -260,7 +300,17 @@ export function subscribeToEvents(calendarIds, callback) {
         table: 'events',
         filter: `calendar_id=eq.${calendarId}`,
       },
-      callback,
+      callbacks.onEventChange,
+    );
+    channel.on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'tags',
+        filter: `calendar_id=eq.${calendarId}`,
+      },
+      callbacks.onTagChange,
     );
   });
 

@@ -1,5 +1,12 @@
 -- Kalender Supabase schema and Row Level Security policies.
 -- Run this in the Supabase SQL editor after enabling Email/Password Auth.
+--
+-- Tags are calendar-scoped (one row per (calendar_id, name)). Every newly
+-- created calendar is auto-seeded with six tags via the
+-- `calendars_seed_tags` trigger: Untagged + the five legacy categories
+-- (Work, Personal, Urgent, Focus, Travel). Events reference tags via the
+-- mandatory `events.tag_id`; color and name are read from the joined tag
+-- row (no display snapshot on the event itself).
 
 create extension if not exists pgcrypto;
 
@@ -36,12 +43,13 @@ create table public.profiles (
 
 create table public.tags (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  calendar_id uuid not null references public.calendars(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
   name text not null check (char_length(name) between 1 and 32),
   color text not null default '#92c5fc',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (user_id, name)
+  unique (calendar_id, name)
 );
 
 create table public.events (
@@ -51,9 +59,7 @@ create table public.events (
   description text default '',
   starts_at timestamptz not null,
   ends_at timestamptz not null,
-  color text not null default '#92c5fc',
-  category text not null default 'work',
-  tag_id uuid references public.tags(id) on delete set null,
+  tag_id uuid not null references public.tags(id) on delete restrict,
   completed boolean not null default false,
   reminder_minutes integer,
   created_by uuid default auth.uid() references auth.users(id) on delete set null,
@@ -61,7 +67,6 @@ create table public.events (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   check (ends_at > starts_at),
-  check (category in ('work', 'personal', 'urgent', 'focus', 'travel')),
   check (reminder_minutes is null or reminder_minutes in (5, 10, 15, 30, 60, 1440))
 );
 
@@ -82,7 +87,7 @@ create table public.quick_add_templates (
 create index calendars_owner_id_idx on public.calendars(owner_id);
 create index calendar_members_user_id_idx on public.calendar_members(user_id);
 create index profiles_email_idx on public.profiles(lower(email));
-create index tags_user_id_idx on public.tags(user_id);
+create index tags_calendar_id_idx on public.tags(calendar_id);
 create index events_calendar_time_idx on public.events(calendar_id, starts_at, ends_at);
 create index quick_add_templates_user_id_idx on public.quick_add_templates(user_id);
 
@@ -143,19 +148,21 @@ as $$
   );
 $$;
 
-create or replace function public.can_use_tag(target_tag_id uuid)
+create or replace function public.can_use_tag(target_tag_id uuid, target_calendar_id uuid)
 returns boolean
 language sql
 security definer
 set search_path = public
 stable
 as $$
-  select target_tag_id is null or exists (
-    select 1
-    from public.tags t
-    where t.id = target_tag_id
-      and t.user_id = auth.uid()
-  );
+  select target_tag_id is not null
+    and target_calendar_id is not null
+    and exists (
+      select 1
+      from public.tags t
+      where t.id = target_tag_id
+        and t.calendar_id = target_calendar_id
+    );
 $$;
 
 create or replace function public.touch_updated_at()
@@ -199,6 +206,26 @@ begin
   insert into public.calendar_members(calendar_id, user_id, role)
   values (new.id, new.owner_id, 'owner')
   on conflict (calendar_id, user_id) do update set role = 'owner';
+  return new;
+end;
+$$;
+
+create or replace function public.seed_calendar_tags()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.tags (calendar_id, user_id, name, color)
+  values
+    (new.id, new.owner_id, 'Untagged', '#94a3b8'),
+    (new.id, new.owner_id, 'Work',     '#3b82f6'),
+    (new.id, new.owner_id, 'Personal', '#22c55e'),
+    (new.id, new.owner_id, 'Urgent',   '#ef4444'),
+    (new.id, new.owner_id, 'Focus',    '#a855f7'),
+    (new.id, new.owner_id, 'Travel',   '#f59e0b')
+  on conflict do nothing;
   return new;
 end;
 $$;
@@ -287,6 +314,11 @@ create trigger calendars_add_owner_member
 after insert on public.calendars
 for each row execute function public.add_calendar_owner_member();
 
+drop trigger if exists calendars_seed_tags on public.calendars;
+create trigger calendars_seed_tags
+after insert on public.calendars
+for each row execute function public.seed_calendar_tags();
+
 drop policy if exists "Members can read calendars" on public.calendars;
 create policy "Members can read calendars"
 on public.calendars
@@ -330,34 +362,37 @@ for select
 to authenticated
 using (id = auth.uid());
 
-drop policy if exists "Users can read their tags" on public.tags;
-create policy "Users can read their tags"
+drop policy if exists "Members can read tags" on public.tags;
+create policy "Members can read tags"
 on public.tags
 for select
 to authenticated
-using (user_id = auth.uid());
+using (public.is_calendar_member(calendar_id));
 
-drop policy if exists "Users can create their tags" on public.tags;
-create policy "Users can create their tags"
+drop policy if exists "Editors can create tags" on public.tags;
+create policy "Editors can create tags"
 on public.tags
 for insert
 to authenticated
-with check (user_id = auth.uid());
+with check (
+  user_id = auth.uid()
+  and public.can_edit_calendar(calendar_id)
+);
 
-drop policy if exists "Users can update their tags" on public.tags;
-create policy "Users can update their tags"
+drop policy if exists "Editors can update tags" on public.tags;
+create policy "Editors can update tags"
 on public.tags
 for update
 to authenticated
-using (user_id = auth.uid())
-with check (user_id = auth.uid());
+using (public.can_edit_calendar(calendar_id))
+with check (public.can_edit_calendar(calendar_id));
 
-drop policy if exists "Users can delete their tags" on public.tags;
-create policy "Users can delete their tags"
+drop policy if exists "Editors can delete tags" on public.tags;
+create policy "Editors can delete tags"
 on public.tags
 for delete
 to authenticated
-using (user_id = auth.uid());
+using (public.can_edit_calendar(calendar_id));
 
 drop policy if exists "Users can read their quick add templates" on public.quick_add_templates;
 create policy "Users can read their quick add templates"
@@ -422,7 +457,10 @@ create policy "Editors can create events"
 on public.events
 for insert
 to authenticated
-with check (public.can_edit_calendar(calendar_id) and public.can_use_tag(tag_id));
+with check (
+  public.can_edit_calendar(calendar_id)
+  and public.can_use_tag(tag_id, calendar_id)
+);
 
 drop policy if exists "Editors can update events" on public.events;
 create policy "Editors can update events"
@@ -430,7 +468,10 @@ on public.events
 for update
 to authenticated
 using (public.can_edit_calendar(calendar_id))
-with check (public.can_edit_calendar(calendar_id) and public.can_use_tag(tag_id));
+with check (
+  public.can_edit_calendar(calendar_id)
+  and public.can_use_tag(tag_id, calendar_id)
+);
 
 drop policy if exists "Editors can delete events" on public.events;
 create policy "Editors can delete events"
@@ -442,6 +483,14 @@ using (public.can_edit_calendar(calendar_id));
 do $$
 begin
   alter publication supabase_realtime add table public.events;
+exception
+  when duplicate_object then null;
+end;
+$$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.tags;
 exception
   when duplicate_object then null;
 end;

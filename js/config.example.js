@@ -9,19 +9,8 @@
 export const SUPABASE_URL = '__SUPABASE_URL__';
 export const SUPABASE_PUBLISHABLE_KEY = '__SUPABASE_PUBLISHABLE_KEY__';
 
-export const CATEGORY_COLORS = {
-  work: '#3b82f6',
-  personal: '#22c55e',
-  urgent: '#ef4444',
-  focus: '#a855f7',
-  travel: '#f59e0b',
-};
-
-export const CATEGORIES = Object.keys(CATEGORY_COLORS);
-
-export const BUILT_IN_TAGS = CATEGORIES.map((id) => ({
-  id,
-  name: id.charAt(0).toUpperCase() + id.slice(1),
-  color: CATEGORY_COLORS[id],
-  builtIn: true,
-}));
+// Color used to render an event whose tag was deleted between fetches. The
+// canonical "Untagged" color lives in the database (see seed_calendar_tags()
+// in supabase/schema.sql); this is a client-side fallback only.
+export const FALLBACK_TAG_COLOR = '#94a3b8';
+export const FALLBACK_TAG_NAME = 'Untagged';

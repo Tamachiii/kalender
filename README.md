@@ -117,7 +117,13 @@ must be configured with **Source: GitHub Actions** under **Settings → Pages**.
 5. For an existing project that pre-dates the tag/archive features, also run
    `supabase/feature_updates.sql`. If calendar inserts fail with an RLS error,
    run `supabase/rls_fix_calendars.sql`. For Custom Quick Add templates, also
-   run `supabase/2026-05-add-quick-add-templates.sql`.
+   run `supabase/2026-05-add-quick-add-templates.sql`. For the move from
+   user-owned tags to calendar-scoped tags, run
+   `supabase/2026-05-calendar-scoped-tags.sql`. After verifying the new tag
+   flow with two real users (see "Tags" below), apply
+   `supabase/2026-05-calendar-scoped-tags-cleanup.sql` to drop the legacy
+   user-scoped rows and add the deferred `NOT NULL` /
+   `unique(calendar_id, name)` constraints.
 6. In Authentication URL configuration, add your GitHub Pages URL to allowed
    redirect/site URLs.
 
@@ -129,9 +135,13 @@ The app uses these tables:
   `viewer` roles.
 - `profiles` — a safe public profile table populated from Supabase Auth for
   email-based sharing.
-- `tags` — user-owned custom tags with names and colors.
-- `events` — shared events with title, description, time range, color,
-  category, completion state, and optional reminder.
+- `tags` — calendar-scoped tags with names and colors. Every newly created
+  calendar is auto-seeded by the `seed_calendar_tags` trigger with six tags:
+  `Untagged`, `Work`, `Personal`, `Urgent`, `Focus`, `Travel`. Members read,
+  owners and collaborators write.
+- `events` — shared events with title, description, time range, mandatory
+  `tag_id` (color and name come from the joined `tags` row), completion
+  state, and optional reminder.
 
 RLS ensures users can only read calendars they belong to. Owners can share
 calendars, owners and collaborators can modify events, and viewers can only
@@ -145,11 +155,51 @@ three-field tag rule, RLS policies, the schema-change runbook) live in
 
 ## Tags and archiving
 
-Tags are managed in Settings, appear as horizontal chips in the event sheet,
-and can be used for calendar events or task-style events. Built-in tags save
-through `events.category`, custom tags save through `events.tag_id`, and both
-paths also write `events.color` as a display snapshot. When debugging tag
-edits, verify all three fields in the returned event row.
+Tags are **calendar-scoped**: each calendar has its own tag list and a tag
+created in calendar A only shows up in pickers for calendar A. Settings
+groups tags by calendar; only calendars where you have editor access show
+the "+ Add tag" affordance.
+
+Each newly created calendar is automatically seeded with six tags by the
+`seed_calendar_tags` SQL trigger:
+
+- `Untagged` (gray) — the per-calendar default. Events whose tag is deleted
+  are reassigned here. The UI prevents deleting `Untagged`, and the
+  `events.tag_id` foreign key is `on delete restrict` as a database-level
+  safety net.
+- `Work`, `Personal`, `Urgent`, `Focus`, `Travel` — match the legacy
+  `events.category` enum so events from before the migration keep their
+  visual grouping.
+
+Events store only a `tag_id`; color and name are read from the joined `tags`
+row at render time. There is no `events.category` or `events.color` after
+the migration.
+
+### Authorization
+
+| Action | Allowed for |
+|---|---|
+| Read tags in a calendar | any member of that calendar |
+| Create / edit / delete tags | owner or collaborator of that calendar |
+
+A viewer-role user sees the calendar's tags on events but cannot open the
+"+ Add tag" affordance, and any direct mutation attempt is blocked by RLS.
+
+### Tag deletion
+
+Deleting a tag opens a confirmation modal listing the affected event count
+(authoritative — fetched from the database, not the in-memory window). On
+confirm the app reassigns every affected event to the calendar's `Untagged`
+tag and then deletes the original. If reassignment fails the original is
+left intact and the modal stays open with the error.
+
+### Custom Quick Add templates and tags
+
+Templates are user-scoped (one set per user) but their `default_tag` points
+at a tag in the template's `default_calendar_id`. Switching the default
+calendar in the template form refreshes the tag dropdown. If a template's
+tag becomes invalid for a new calendar (or was nulled out by the migration),
+the Quick Add still applies — just with no tag pre-selected.
 
 Calendar archiving updates `calendars.archived_at`. Archived calendars are
 hidden from the normal calendar list by default and can be shown/restored from
@@ -292,9 +342,11 @@ check these first:
 - Hard-refresh or clear site data after UI patches. Older versions used a
   cache-first service worker that could keep serving a stale broken shell.
   The current service worker is network-first for app navigations.
-- Run `supabase/feature_updates.sql` after pulling tag/task updates. If the
-  `tags` table is missing, the app falls back to built-in tags and shows a
-  toast instead of aborting, but custom tags will not work.
+- Run `supabase/feature_updates.sql` after pulling tag/task updates, then
+  `supabase/2026-05-calendar-scoped-tags.sql` for per-calendar tags. If the
+  `tags` table can't be loaded, the app shows a toast pointing at the
+  migration; pickers will still render the calendar dropdown but the tag
+  list will be empty until the migration is applied.
 - Test locally first: `node server.mjs`, then open `http://127.0.0.1:4173/`
   and verify the browser console has no new errors.
 
@@ -317,7 +369,16 @@ mobile viewport and watch the browser console:
 - Tap a month date and confirm the day-detail view opens for the exact date.
 - Add an event from day detail and confirm the selected date is prefilled.
 - Add a task from day detail, then complete and uncomplete it from Tasks.
-- Create, edit, and delete a custom tag in Settings.
+- Create a tag in calendar A in Settings; switch to calendar B and confirm
+  the new tag is **not** in the picker for events in calendar B.
+- Switch the calendar dropdown inside an open event modal and confirm the
+  tag picker re-renders against the new calendar's tags.
+- Delete a tag that's in use and confirm the modal shows the affected
+  count, then verify the events are still visible afterwards (now under the
+  "Untagged" color).
+- Sign in as a viewer-role user on a shared calendar; confirm the
+  "+ Add tag" affordance is hidden and any direct API call is blocked by
+  RLS.
 - Create a custom Quick Add template, then verify a phrase starting with
   that shortcut prefills its defaults and that parsed date/time still wins.
 - Share a calendar by email and verify unknown emails show a friendly error.
@@ -330,10 +391,12 @@ mobile viewport and watch the browser console:
 
 Common failure modes:
 
-- **Tag edits only change visually** — inspect the update payload and returned
-  row for `category`, `tag_id`, and `color`.
-- **RLS failures on event updates** — confirm the user is an owner/collaborator
-  and that any custom `tag_id` belongs to the current authenticated user.
+- **Tag edits only change visually** — open the browser console and watch for
+  the `[tag] selectEventTag` and `[event] save payload` / `[event] save response`
+  log lines. The response row's `tag_id` should match what was selected.
+- **RLS failures on event updates** — confirm the user is owner/collaborator
+  on the event's calendar AND that the `tag_id` belongs to the same calendar
+  (`can_use_tag(tag_id, calendar_id)` returns true).
 - **Archive/restore errors** — run the latest feature migration so
   `calendars.archived_at` exists.
 - **Stale UI after deployment** — should not occur (cache version is stamped

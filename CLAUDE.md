@@ -10,7 +10,7 @@ No bundler, package manager, test runner, or linter. The app is plain ES modules
 - **Preview tool** — `.claude/launch.json` registers a `kalender` server config so the Claude Preview tool can start/stop it (`preview_start`, `preview_screenshot`, `preview_console_logs`, etc.). On Windows + WSL the launch entry shells through `wsl.exe -d Ubuntu --cd /home/tamachi/kalender -- bash -lc "node server.mjs"` because Node is installed inside WSL, not on the Windows PATH. If you change distro name or the project path, update that file.
 - **Local config** — `js/config.js` is **gitignored**. For local dev, `cp js/config.example.js js/config.js` and fill in the two `__SUPABASE_*__` placeholders. The publishable key must point at a Supabase project where you actually have a confirmed user, otherwise login returns a generic `Invalid login credentials` from Supabase. Local dev hits the same Supabase project as prod for whichever key is in the file — there is no offline mock.
 - **Deploys** are GitHub Pages via `.github/workflows/deploy.yml`. The workflow regenerates `js/config.js` from `SUPABASE_URL` + `SUPABASE_PUBLISHABLE_KEY` repository secrets before uploading the Pages artifact. **Never commit `js/config.js`** — `.gitignore` enforces this and the workflow is the only thing that should ever produce it.
-- Supabase migrations live under `supabase/` and are applied by pasting them into the Supabase SQL editor — there is no migration CLI. Run order for an existing project: `rls_fix_calendars.sql` if calendar inserts fail RLS, then `feature_updates.sql` for tags / completion / archive / `share_calendar_by_email`. `schema.sql` is the from-scratch baseline.
+- Supabase migrations live under `supabase/` and are applied by pasting them into the Supabase SQL editor — there is no migration CLI. Run order for an existing project: `rls_fix_calendars.sql` if calendar inserts fail RLS, then `feature_updates.sql` for completion / archive / `share_calendar_by_email`, then `2026-05-add-quick-add-templates.sql`, then `2026-05-calendar-scoped-tags.sql` (move tags from user-scoped to calendar-scoped, drop `events.category` and `events.color`), and finally — only after verifying the new tag flow with two real users — `2026-05-calendar-scoped-tags-cleanup.sql` (drops legacy rows, adds `NOT NULL` and `unique(calendar_id, name)`). `schema.sql` is the from-scratch baseline.
 
 ## Architecture
 
@@ -27,10 +27,10 @@ config.js  →  supabaseClient.js  →  api.js  →  app.js  ←  ui.js
                                   dateUtils.js  (pure helpers)
 ```
 
-- `config.js` — Supabase URL/key, `CATEGORY_COLORS`, and the derived `BUILT_IN_TAGS` array. Built-in tag IDs (`work`, `personal`, ...) collide-by-design with `events.category` values; new built-ins must match a category string.
+- `config.js` — Supabase URL/key plus `FALLBACK_TAG_COLOR` / `FALLBACK_TAG_NAME` used only when an event arrives via realtime ahead of its tag row. There is no built-in-tag list anymore: every calendar gets six seeded tags (Untagged + Work/Personal/Urgent/Focus/Travel) at create time via the `seed_calendar_tags` SQL trigger.
 - `supabaseClient.js` — singleton client. Uses a custom `storageKey` (`shared-calendar-auth-v2`) and clears two legacy keys on first load; renaming the key strands users without warning.
-- `api.js` — every Supabase call lives here. Notable: `fetchCalendars` retries the select without `archived_at` if the column is missing (graceful pre-migration fallback); `subscribeToEvents` opens one channel with one `postgres_changes` listener per calendar ID and returns the channel for later `removeChannel`.
-- `store.js` — single mutable `state` object plus selectors. `eventTagKey` resolves an event's display tag by preferring a still-valid `tag_id` and falling back to `category`; `eventTag`/`findTag` look up against `BUILT_IN_TAGS ∪ state.tags`. `canEditCalendar` is the client-side mirror of the RLS edit rule.
+- `api.js` — every Supabase call lives here. Notable: `fetchCalendars` retries the select without `archived_at` if the column is missing (graceful pre-migration fallback); `subscribeToWorkspace` opens one channel with one `postgres_changes` listener per (table, calendar_id) pair (events + tags) and returns the channel for later `removeChannel`.
+- `store.js` — single mutable `state` object plus selectors. `tagsForCalendar(calendarId)` is the only way to populate a tag picker — never iterate `state.tags` directly, or events from one calendar can be saved with a tag from another. `findTag(id)` is a global lookup used to resolve an existing event's tag for rendering. `canEditCalendar` is the client-side mirror of the RLS edit rule.
 - `ui.js` — all DOM rendering and form read/write. `app.js` never touches the DOM directly except through `elements()`/the helpers exported here.
 - `app.js` — wires DOM events to api/store, owns lifecycle (`boot`, `loadWorkspace`, `recoverAfterResume`), realtime subscription churn, optimistic updates, swipe nav, quick-add parsing, and reminder scheduling.
 
@@ -42,7 +42,7 @@ config.js  →  supabaseClient.js  →  api.js  →  app.js  ←  ui.js
 
 ### Optimistic mutations
 
-Most mutations route through `withOptimisticUpdate({ apply, persist, success?, errorMessage? })` at the top of [js/app.js](js/app.js). It snapshots `events` / `calendars` / `activeCalendarId`, bumps `refreshRequestId`, runs `apply()` + render, awaits `persist()`, and on failure restores the snapshot, re-renders, and toasts. Use this helper for any new event/calendar mutation — it removes the most common bug shape (forgetting to roll back, forgetting to bump `refreshRequestId`, or rendering at the wrong moment).
+Most mutations route through `withOptimisticUpdate({ apply, persist, success?, errorMessage? })` at the top of [js/app.js](js/app.js). It snapshots `events` / `calendars` / `tags` / `activeCalendarId`, bumps `refreshRequestId`, runs `apply()` + render, awaits `persist()`, and on failure restores the snapshot, re-renders, and toasts. Use this helper for any new event/calendar mutation — it removes the most common bug shape (forgetting to roll back, forgetting to bump `refreshRequestId`, or rendering at the wrong moment).
 
 Two constraints when calling it:
 
@@ -51,9 +51,14 @@ Two constraints when calling it:
 
 New events get a `tmp-${Date.now()}` ID that is replaced when the server row returns.
 
-### Tag system invariant
+### Tag system invariants
 
-An event's color/tag is stored in **three** fields that must stay consistent: `events.category` (built-in tag id or legacy category), `events.tag_id` (FK to user `tags`, nullable), and `events.color` (display snapshot). `saveEvent` in `api.js` writes all three from the form payload. When editing tag-related code, verify all three on the returned row — silent drift here is the most common cause of "tag changed visually but reverts on reopen" bugs.
+Tags are **calendar-scoped**, not user-scoped. The contract:
+
+- `events.tag_id` is the canonical tag identifier. `events.category` and `events.color` no longer exist on the row; color and name come from the joined `tags` row at render time. After the cleanup migration, `tag_id` is `NOT NULL`.
+- A tag belongs to exactly one calendar (`tags.calendar_id`, `unique(calendar_id, name)`), and an event can only reference a tag from its own calendar. The RLS function `can_use_tag(tag_id, calendar_id)` enforces this on insert/update.
+- Every calendar has an `Untagged` tag, seeded at calendar-create time by the `seed_calendar_tags` trigger. It is the per-calendar fallback the app re-assigns events to when a tag is deleted while in use. Never delete `Untagged`; the UI blocks it explicitly and the FK on events is `on delete restrict` as a database-level safety net.
+- All tag pickers (event-modal chips, Quick Add template default, filter chips, settings list) consume `tagsForCalendar(calendarId)` from `store.js`, never `state.tags` directly. When the modal's calendar dropdown changes, the tag picker re-renders against the new calendar's tags and falls back to that calendar's `Untagged` if the previously-selected tag isn't valid there.
 
 ### Realtime + lifecycle
 
@@ -86,7 +91,9 @@ Authoritative source is `supabase/schema.sql`; this is the summary used when rea
 | `events` | `SELECT` | user is a member of the event's calendar |
 | `events` | `INSERT` / `UPDATE` / `DELETE` | user is owner OR collaborator (viewers blocked) |
 | `profiles` | `SELECT` | row is the user's own profile (sharing flows through `share_calendar_by_email` RPC instead) |
-| `tags` | all | user owns the tag; events may reference a custom `tag_id` only when that tag belongs to `auth.uid()` |
+| `tags` | `SELECT` | user is a member of the tag's calendar |
+| `tags` | `INSERT` / `UPDATE` / `DELETE` | user is owner OR collaborator of the tag's calendar (`can_edit_calendar`) |
+| `events` (tag_id) | enforced via `can_use_tag(tag_id, calendar_id)` on `INSERT`/`UPDATE` — tag must belong to the event's calendar |
 
 ## Changing the Supabase schema
 

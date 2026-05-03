@@ -214,9 +214,7 @@
             Notes
             <textarea id="event-description" rows="2"></textarea>
           </label>
-          <input id="event-category" type="hidden" value="work" />
           <input id="event-tag-id" type="hidden" />
-          <input id="event-color" type="hidden" value="#92c5fc" />
           <label class="checkbox-row">
             <input id="event-reminder" type="checkbox" />
             <span>Remind me 15 minutes before</span>
@@ -291,6 +289,10 @@
         </div>
         <input id="tag-id" type="hidden" />
         <label>
+          Calendar
+          <select id="tag-calendar" required></select>
+        </label>
+        <label>
           Name
           <input id="tag-name" type="text" maxlength="32" required />
         </label>
@@ -304,6 +306,29 @@
           <span></span>
           <button class="ghost-action" type="button" data-close-modal>Cancel</button>
           <button class="primary-action" type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="tag-delete-modal" class="modal tag-delete-modal">
+      <form id="tag-delete-form" method="dialog">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Delete tag</p>
+            <h2 id="tag-delete-title">Delete tag</h2>
+          </div>
+          <button class="icon-button" value="cancel" type="button" data-close-modal>x</button>
+        </div>
+        <input id="tag-delete-id" type="hidden" />
+        <p id="tag-delete-summary" class="form-message" role="status"></p>
+        <p id="tag-delete-error" class="form-message" role="alert"></p>
+        <div class="modal-actions">
+          <span></span>
+          <span></span>
+          <button class="ghost-action" type="button" data-close-modal>Cancel</button>
+          <button id="tag-delete-confirm-btn" class="danger-action" type="submit">
+            Delete tag
+          </button>
         </div>
       </form>
     </dialog>

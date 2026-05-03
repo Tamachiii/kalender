@@ -858,10 +858,39 @@ textarea:focus {
 
 .tag-list {
   display: grid;
-  gap: 8px;
+  gap: 14px;
   width: 100%;
   max-width: 100%;
   min-width: 0;
+}
+
+.tag-group {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tag-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.tag-group-header strong {
+  color: var(--ink);
+  font-size: 0.82rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.tag-group-add {
+  font-size: 0.74rem;
 }
 
 .tag-list-item {
