@@ -8,11 +8,16 @@ dark mode, search, filters, and a weekly overview.
 
 - `index.html` — app shell and dialogs
 - `css/styles.css` — responsive light/dark design system
-- `js/config.js` — Supabase URL/key and category colors **(gitignored; see below)**
+- `js/config.js` — Supabase URL/key and the fallback tag color/name **(gitignored; see below)**
 - `js/config.example.js` — template/shape for `js/config.js`
+- `js/supabaseClient.js` — singleton Supabase client
 - `js/api.js` — Supabase Auth, database, and realtime calls
-- `js/ui.js` — rendering and form helpers
-- `js/app.js` — application state transitions and event handlers
+- `js/store.js` — single mutable state object plus selectors
+- `js/dateUtils.js` — pure date helpers
+- `js/quickAdd.js` — pure Quick Add input parser
+- `js/htmlSafe.js` — `escapeHtml` and `safeColor` (XSS defenses for renderers)
+- `js/ui.js` — DOM rendering and form read/write helpers
+- `js/app.js` — application boot, state transitions, and event handlers
 - `supabase/schema.sql` — tables, triggers, RLS policies, and realtime setup
 - `.github/workflows/deploy.yml` — GitHub Pages deploy with secret injection
 
@@ -123,7 +128,12 @@ must be configured with **Source: GitHub Actions** under **Settings → Pages**.
    flow with two real users (see "Tags" below), apply
    `supabase/2026-05-calendar-scoped-tags-cleanup.sql` to drop the legacy
    user-scoped rows and add the deferred `NOT NULL` /
-   `unique(calendar_id, name)` constraints.
+   `unique(calendar_id, name)` constraints. Then apply
+   `supabase/2026-05-events-tag-id-index.sql` (covers the delete-tag
+   reassign/count paths). Finally, apply
+   `supabase/2026-05-color-format-check.sql` to enforce a strict 6-digit hex
+   format on `tags.color` and `calendars.color` (defends against stored XSS
+   via a malicious color string from a calendar collaborator).
 6. In Authentication URL configuration, add your GitHub Pages URL to allowed
    redirect/site URLs.
 
@@ -146,6 +156,27 @@ The app uses these tables:
 RLS ensures users can only read calendars they belong to. Owners can share
 calendars, owners and collaborators can modify events, and viewers can only
 read.
+
+## Tests
+
+Unit tests live under `test/` and run on Node's built-in test runner — no
+install, no bundler, no dev dependencies.
+
+```bash
+npm test
+```
+
+Covers the Quick Add parser, date helpers, store selectors, and the two
+HTML-safety helpers (`escapeHtml`, `safeColor`). UI flows that need a real
+browser, and the RLS smoke checks that need a second Supabase user, live
+in [TESTING.md](TESTING.md) as a manual checklist — run it before
+deploying any UI or data-flow change.
+
+`npm test` runs `scripts/ensure-config.mjs` first, which copies
+`js/config.example.js` → `js/config.js` if missing, because `js/store.js`
+statically imports two constants from `config.js` (which is gitignored).
+
+There is no CI configuration for tests — they're a local pre-deploy gate.
 
 ## Architecture, RLS, and schema changes
 
@@ -391,9 +422,10 @@ mobile viewport and watch the browser console:
 
 Common failure modes:
 
-- **Tag edits only change visually** — open the browser console and watch for
-  the `[tag] selectEventTag` and `[event] save payload` / `[event] save response`
-  log lines. The response row's `tag_id` should match what was selected.
+- **Tag edits only change visually** — open the Network tab and inspect the
+  `events?id=eq.…` PATCH request. The request body's `tag_id` and the
+  response row's `tag_id` should both match what was selected. If they
+  diverge, the modal's tag picker is out of sync with `state.tags`.
 - **RLS failures on event updates** — confirm the user is owner/collaborator
   on the event's calendar AND that the `tag_id` belongs to the same calendar
   (`can_use_tag(tag_id, calendar_id)` returns true).
