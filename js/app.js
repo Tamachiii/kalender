@@ -1,11 +1,14 @@
 import {
   createCalendar,
+  createQuickAddTemplate,
   createTag,
   deleteCalendar,
   deleteEvent,
+  deleteQuickAddTemplate,
   deleteTag,
   fetchCalendars,
   fetchEvents,
+  fetchQuickAddTemplates,
   fetchTags,
   getSession,
   onAuthStateChange,
@@ -17,10 +20,16 @@ import {
   signOut,
   subscribeToEvents,
   updateCalendarArchive,
+  updateQuickAddTemplate,
   updateTag,
 } from './api.js';
 import { addDays, addMonths, dateKey, startOfDay, startOfMonthGrid, startOfWeek } from './dateUtils.js';
-import { canEditCalendar, state, syncSelectedTags } from './store.js';
+import {
+  canEditCalendar,
+  findQuickAddTemplateByShortcut,
+  state,
+  syncSelectedTags,
+} from './store.js';
 import {
   bindElements,
   elements,
@@ -28,12 +37,14 @@ import {
   openCalendarModal,
   openDayDetail,
   openEventModal,
+  openQuickAddTemplateModal,
   openTagModal,
   openShareModal,
   openTypePicker,
   closeTypePicker,
   consumePendingTypePickerDate,
   readEventForm,
+  readQuickAddTemplateForm,
   readTagForm,
   renderAll,
   renderCalendar,
@@ -109,6 +120,7 @@ async function boot() {
       state.calendars = [];
       state.events = [];
       state.tags = [];
+      state.quickAddTemplates = [];
       renderUser();
       await removeChannel(state.realtimeChannel);
       state.realtimeChannel = null;
@@ -284,6 +296,13 @@ function bindUiEvents() {
       return;
     }
 
+    // The day-detail-shell carries [data-date] for drag-drop drop targeting.
+    // Without this guard, clicks on the Quick Add input bubble up here, match
+    // the data-date selector, and re-render the shell — wiping the input
+    // mid-keystroke. Once we're inside day-detail, only the Back/Add/event
+    // buttons (handled above) should navigate.
+    if (state.dayDetailDate) return;
+
     const dated = event.target.closest('[data-date]');
     if (dated) openDayDetail(new Date(`${dated.dataset.date}T00:00:00`));
   });
@@ -293,13 +312,7 @@ function bindUiEvents() {
     if (!form) return;
     event.preventDefault();
     const input = form.querySelector('[data-quick-add-input]');
-    const draft = parseQuickAdd(input.value, state.dayDetailDate || state.selectedDate);
-    if (!draft.title) {
-      showToast('Add a title to quick-add.');
-      return;
-    }
-    input.value = '';
-    openEventModal(null, new Date(draft.starts_at), draft);
+    handleQuickAddSubmit(input);
   });
 
   els.calendarGrid.addEventListener('dragstart', (event) => {
@@ -332,6 +345,33 @@ function bindUiEvents() {
   els.tagForm.addEventListener('submit', handleSaveTag);
   els.deleteTagBtn.addEventListener('click', () => handleDeleteTag(els.tagId.value));
   els.shareForm.addEventListener('submit', handleShareCalendar);
+
+  if (els.newQuickAddTemplateBtn) {
+    els.newQuickAddTemplateBtn.addEventListener('click', () => openQuickAddTemplateModal());
+  }
+  if (els.quickAddTemplateForm) {
+    els.quickAddTemplateForm.addEventListener('submit', handleSaveQuickAddTemplate);
+  }
+  if (els.deleteQuickAddTemplateBtn) {
+    els.deleteQuickAddTemplateBtn.addEventListener('click', () =>
+      handleDeleteQuickAddTemplate(els.quickAddTemplateId.value),
+    );
+  }
+  if (els.quickAddTemplateList) {
+    els.quickAddTemplateList.addEventListener('click', (event) => {
+      const row = event.target.closest('.quick-add-template-item');
+      if (!row) return;
+      const template = state.quickAddTemplates.find(
+        (item) => item.id === row.dataset.quickAddTemplateId,
+      );
+      if (!template) return;
+      if (event.target.closest('.quick-add-template-delete')) {
+        handleDeleteQuickAddTemplate(template.id);
+        return;
+      }
+      openQuickAddTemplateModal(template);
+    });
+  }
   els.closeModalButtons.forEach((button) => {
     button.addEventListener('click', () => button.closest('dialog').close());
   });
@@ -343,9 +383,14 @@ function bindUiEvents() {
 
 async function loadWorkspace() {
   renderUser();
-  const [calendars, tags] = await Promise.all([loadCalendarsSafely(), loadTagsSafely()]);
+  const [calendars, tags, templates] = await Promise.all([
+    loadCalendarsSafely(),
+    loadTagsSafely(),
+    loadQuickAddTemplatesSafely(),
+  ]);
   state.calendars = calendars;
   state.tags = tags;
+  state.quickAddTemplates = templates;
   syncSelectedTags();
   state.activeCalendarId = state.calendars.find((calendar) => !calendar.archived_at)?.id || null;
   setActivePanel('calendar');
@@ -367,6 +412,21 @@ async function loadTagsSafely() {
     return await fetchTags();
   } catch (error) {
     showToast('Custom tags need the latest Supabase migration.');
+    return [];
+  }
+}
+
+async function loadQuickAddTemplatesSafely() {
+  try {
+    const { rows, missingTable } = await fetchQuickAddTemplates();
+    if (missingTable) {
+      console.warn(
+        '[quick-add] quick_add_templates table is missing. Run supabase/2026-05-add-quick-add-templates.sql.',
+      );
+    }
+    return rows;
+  } catch (error) {
+    showToast('Quick-add templates could not be loaded.');
     return [];
   }
 }
@@ -575,6 +635,60 @@ async function handleDeleteTag(tagId) {
   }
 }
 
+async function handleSaveQuickAddTemplate(event) {
+  event.preventDefault();
+  els.quickAddTemplateError.textContent = '';
+  try {
+    const payload = readQuickAddTemplateForm();
+    if (payload.id) {
+      const { id, ...update } = payload;
+      const saved = await updateQuickAddTemplate(id, update);
+      state.quickAddTemplates = state.quickAddTemplates.map((item) =>
+        item.id === saved.id ? saved : item,
+      );
+      showToast('Quick-add updated');
+    } else {
+      const { id, ...create } = payload;
+      const created = await createQuickAddTemplate(create);
+      state.quickAddTemplates = [...state.quickAddTemplates, created];
+      showToast('Quick-add created');
+    }
+    els.quickAddTemplateModal.close();
+    renderAll();
+  } catch (error) {
+    if (error.code === '23505' || /duplicate key/i.test(error.message || '')) {
+      els.quickAddTemplateError.textContent = 'A quick-add with that shortcut already exists.';
+    } else if (error.code === '42P01' || /quick_add_templates/i.test(error.message || '')) {
+      els.quickAddTemplateError.textContent =
+        'Run supabase/2026-05-add-quick-add-templates.sql to enable Custom Quick Adds.';
+    } else {
+      els.quickAddTemplateError.textContent = error.message || 'Could not save quick-add.';
+    }
+  }
+}
+
+async function handleDeleteQuickAddTemplate(templateId) {
+  const template = state.quickAddTemplates.find((item) => item.id === templateId);
+  if (!template) return;
+
+  const confirmed = window.confirm(`Delete the "${template.shortcut}" quick-add?`);
+  if (!confirmed) return;
+
+  try {
+    await deleteQuickAddTemplate(templateId);
+    state.quickAddTemplates = state.quickAddTemplates.filter((item) => item.id !== templateId);
+    if (els.quickAddTemplateModal.open) els.quickAddTemplateModal.close();
+    renderAll();
+    showToast('Quick-add deleted');
+  } catch (error) {
+    if (els.quickAddTemplateModal.open) {
+      els.quickAddTemplateError.textContent = error.message || 'Could not delete quick-add.';
+    } else {
+      showToast(error.message || 'Could not delete quick-add.');
+    }
+  }
+}
+
 async function handleShareCalendar(event) {
   event.preventDefault();
   els.shareError.textContent = '';
@@ -705,69 +819,228 @@ function syncThemeButton() {
     document.documentElement.dataset.theme === 'dark' ? 'Light mode' : 'Dark mode';
 }
 
-function parseQuickAdd(value, fallbackDate) {
-  const raw = value.trim();
-  if (!raw) return {};
+// Quick Add parser. Tokenizes the input on whitespace, walks tokens in passes
+// (date → time-range → single-time → duration), and treats anything left as
+// the title. Returns a structured result; a separate buildQuickAddDraft
+// composes start/end with template defaults layered underneath parsed values.
+const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
-  const now = new Date();
-  let date = startOfDay(fallbackDate || now);
-  let title = raw;
-  const lower = raw.toLowerCase();
-  const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+function parseTimeToken(token) {
+  if (!token) return null;
+  const match = token.match(/^(\d{1,2})(?::(\d{2}))?(am|pm)?$/i);
+  if (!match) return null;
+  let hour = Number(match[1]);
+  const minute = Number(match[2] || 0);
+  const meridiem = (match[3] || '').toLowerCase();
+  if (meridiem === 'am') {
+    if (hour === 12) hour = 0;
+    else if (hour > 12) return null;
+  } else if (meridiem === 'pm') {
+    if (hour < 12) hour += 12;
+    else if (hour > 12) return null;
+  }
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return { hour, minute, minutes: hour * 60 + minute };
+}
 
-  if (lower.includes('tomorrow')) {
-    date = startOfDay(addDays(now, 1));
-    title = removeToken(title, 'tomorrow');
-  } else if (lower.includes('today')) {
-    date = startOfDay(now);
-    title = removeToken(title, 'today');
-  } else {
-    const namedDay = dayNames.find((day) => lower.includes(day));
-    if (namedDay) {
-      const target = dayNames.indexOf(namedDay);
-      const current = now.getDay();
-      const offset = (target - current + 7) % 7 || 7;
-      date = startOfDay(addDays(now, offset));
-      title = removeToken(title, namedDay);
+function parseDurationToken(token) {
+  if (!token) return null;
+  const match = token.match(/^(?:(\d+)h)?(?:(\d+)m)?$/i);
+  if (!match || (!match[1] && !match[2])) return null;
+  const minutes = Number(match[1] || 0) * 60 + Number(match[2] || 0);
+  return minutes > 0 ? minutes : null;
+}
+
+// `referenceDate` anchors relative tokens like "today", "tomorrow", and
+// weekday names. It defaults to real `new Date()` so phrases mean what the
+// user expects regardless of which day is selected on the calendar.
+export function parseQuickAddInput(raw, referenceDate) {
+  const trimmed = (raw || '').trim();
+  const empty = {
+    ok: false,
+    title: '',
+    date: null,
+    startMinutes: null,
+    endMinutes: null,
+    durationMinutes: null,
+  };
+  if (!trimmed) return empty;
+
+  const tokens = trimmed.split(/\s+/);
+  const consumed = new Array(tokens.length).fill(false);
+  const result = { ...empty, ok: false };
+
+  const now = referenceDate || new Date();
+  for (let i = 0; i < tokens.length; i += 1) {
+    if (consumed[i]) continue;
+    const lower = tokens[i].toLowerCase();
+    if (lower === 'today') {
+      result.date = startOfDay(now);
+      consumed[i] = true;
+      break;
+    }
+    if (lower === 'tomorrow') {
+      result.date = startOfDay(addDays(now, 1));
+      consumed[i] = true;
+      break;
+    }
+    const weekdayIndex = DAY_NAMES.indexOf(lower);
+    if (weekdayIndex !== -1) {
+      const offset = ((weekdayIndex - now.getDay() + 7) % 7) || 7;
+      result.date = startOfDay(addDays(now, offset));
+      consumed[i] = true;
+      break;
+    }
+    const iso = lower.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (iso) {
+      const candidate = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+      if (!Number.isNaN(candidate.getTime())) {
+        result.date = startOfDay(candidate);
+        consumed[i] = true;
+        break;
+      }
     }
   }
 
-  const timeRange = title.match(/\b(\d{1,2})(?::(\d{2}))?\s*(?:-|to)\s*(\d{1,2})(?::(\d{2}))?\b/i);
-  const singleTime = title.match(/\b(\d{1,2})(?::(\d{2}))\b/);
-  let startHour = 9;
-  let startMinute = 0;
-  let endHour = 10;
-  let endMinute = 0;
-
-  if (timeRange) {
-    startHour = Number(timeRange[1]);
-    startMinute = Number(timeRange[2] || 0);
-    endHour = Number(timeRange[3]);
-    endMinute = Number(timeRange[4] || 0);
-    title = title.replace(timeRange[0], '');
-  } else if (singleTime) {
-    startHour = Number(singleTime[1]);
-    startMinute = Number(singleTime[2]);
-    endHour = startHour + 1;
-    endMinute = startMinute;
-    title = title.replace(singleTime[0], '');
+  // Pass 2: time range — single-token "H-H[:MM]" or three-token "H to H".
+  for (let i = 0; i < tokens.length; i += 1) {
+    if (consumed[i]) continue;
+    const parts = tokens[i].split(/[-–]/);
+    if (parts.length === 2 && parts[0] && parts[1]) {
+      const startT = parseTimeToken(parts[0]);
+      const endT = parseTimeToken(parts[1]);
+      if (startT && endT) {
+        result.startMinutes = startT.minutes;
+        result.endMinutes = endT.minutes;
+        consumed[i] = true;
+        break;
+      }
+    }
+    if (i + 2 < tokens.length && tokens[i + 1].toLowerCase() === 'to') {
+      const startT = parseTimeToken(tokens[i]);
+      const endT = parseTimeToken(tokens[i + 2]);
+      if (startT && endT) {
+        result.startMinutes = startT.minutes;
+        result.endMinutes = endT.minutes;
+        consumed[i] = consumed[i + 1] = consumed[i + 2] = true;
+        break;
+      }
+    }
   }
 
-  const start = new Date(date);
-  start.setHours(startHour, startMinute, 0, 0);
-  const end = new Date(date);
-  end.setHours(endHour, endMinute, 0, 0);
+  // Pass 3: single time. "9", "14:00", "9am", or "9 pm" across two tokens.
+  if (result.startMinutes == null) {
+    for (let i = 0; i < tokens.length; i += 1) {
+      if (consumed[i]) continue;
+      const startT = parseTimeToken(tokens[i]);
+      if (startT) {
+        result.startMinutes = startT.minutes;
+        consumed[i] = true;
+        // Pick up a trailing am/pm in the next token if not already merged.
+        const next = tokens[i + 1]?.toLowerCase();
+        if (!consumed[i + 1] && (next === 'am' || next === 'pm')) {
+          const merged = parseTimeToken(`${tokens[i]}${next}`);
+          if (merged) {
+            result.startMinutes = merged.minutes;
+            consumed[i + 1] = true;
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  // Pass 4: duration — "for 1h", "for 30m", "for 2h30m".
+  for (let i = 0; i < tokens.length - 1; i += 1) {
+    if (consumed[i] || consumed[i + 1]) continue;
+    if (tokens[i].toLowerCase() !== 'for') continue;
+    const minutes = parseDurationToken(tokens[i + 1]);
+    if (minutes != null) {
+      result.durationMinutes = minutes;
+      consumed[i] = consumed[i + 1] = true;
+      break;
+    }
+  }
+
+  result.title = tokens
+    .filter((_, i) => !consumed[i])
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  result.ok = Boolean(
+    result.title || result.date || result.startMinutes != null || result.durationMinutes != null,
+  );
+  return result;
+}
+
+// Build an event-modal draft from a parser result + optional template, layering
+// parsed values on top of template defaults. Always returns ISO timestamps so
+// the caller can pass the draft straight to openEventModal.
+function buildQuickAddDraft(parsed, template, fallbackDate) {
+  const baseDate = parsed.date || startOfDay(fallbackDate || new Date());
+  const startMinutes = parsed.startMinutes ?? 9 * 60;
+  const start = new Date(baseDate);
+  start.setHours(0, 0, 0, 0);
+  start.setMinutes(startMinutes);
+
+  let endMinutes;
+  if (parsed.endMinutes != null) {
+    endMinutes = parsed.endMinutes;
+  } else if (parsed.durationMinutes != null) {
+    endMinutes = startMinutes + parsed.durationMinutes;
+  } else if (template?.default_duration_minutes) {
+    endMinutes = startMinutes + template.default_duration_minutes;
+  } else {
+    endMinutes = startMinutes + 60;
+  }
+  const end = new Date(baseDate);
+  end.setHours(0, 0, 0, 0);
+  end.setMinutes(endMinutes);
   if (end <= start) end.setTime(start.getTime() + 60 * 60 * 1000);
 
+  let calendarId = null;
+  if (template?.default_calendar_id) {
+    const cal = state.calendars.find((c) => c.id === template.default_calendar_id);
+    if (cal && !cal.archived_at && canEditCalendar(cal.id)) calendarId = cal.id;
+  }
+
   return {
-    title: title.replace(/\s+/g, ' ').trim(),
+    title: parsed.title || template?.default_title || '',
     starts_at: start.toISOString(),
     ends_at: end.toISOString(),
+    tag_id: template?.default_tag || null,
+    calendar_id: calendarId,
   };
 }
 
-function removeToken(value, token) {
-  return value.replace(new RegExp(`\\b${token}\\b`, 'i'), '').trim();
+function handleQuickAddSubmit(input) {
+  const raw = (input.value || '').trim();
+  if (!raw) {
+    showToast('Type something to quick-add.');
+    input.focus();
+    return;
+  }
+
+  // Match the first whitespace-delimited token against template shortcuts.
+  const tokens = raw.split(/\s+/);
+  const template = findQuickAddTemplateByShortcut(tokens[0]);
+  const remainder = template ? tokens.slice(1).join(' ') : raw;
+
+  // Reference date for "today/tomorrow/weekday" is always real-now; fallback
+  // for the "no date parsed" case is the day under view.
+  const parsed = parseQuickAddInput(remainder, new Date());
+  const hasAnything = template || parsed.ok;
+
+  if (!hasAnything) {
+    console.warn('[quick-add] Could not parse input', { raw, parsed, template });
+    showToast('Could not understand that quick-add. Try "Title tomorrow 9-17".');
+    return;
+  }
+
+  const draft = buildQuickAddDraft(parsed, template, state.dayDetailDate || state.selectedDate);
+  input.value = '';
+  openEventModal(null, new Date(draft.starts_at), draft);
 }
 
 function bindSwipeNavigation() {
@@ -841,15 +1114,21 @@ async function recoverAfterResume() {
       state.calendars = [];
       state.events = [];
       state.tags = [];
+      state.quickAddTemplates = [];
       await removeChannel(state.realtimeChannel);
       state.realtimeChannel = null;
       return;
     }
 
     renderUser();
-    const [calendars, tags] = await Promise.all([loadCalendarsSafely(), loadTagsSafely()]);
+    const [calendars, tags, templates] = await Promise.all([
+      loadCalendarsSafely(),
+      loadTagsSafely(),
+      loadQuickAddTemplatesSafely(),
+    ]);
     state.calendars = calendars;
     state.tags = tags;
+    state.quickAddTemplates = templates;
     syncSelectedTags();
     state.activeCalendarId =
       calendars.find((calendar) => calendar.id === activeCalendarId)?.id ||

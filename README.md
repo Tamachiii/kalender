@@ -116,7 +116,8 @@ must be configured with **Source: GitHub Actions** under **Settings → Pages**.
 4. Run `supabase/schema.sql` in the SQL editor.
 5. For an existing project that pre-dates the tag/archive features, also run
    `supabase/feature_updates.sql`. If calendar inserts fail with an RLS error,
-   run `supabase/rls_fix_calendars.sql`.
+   run `supabase/rls_fix_calendars.sql`. For Custom Quick Add templates, also
+   run `supabase/2026-05-add-quick-add-templates.sql`.
 6. In Authentication URL configuration, add your GitHub Pages URL to allowed
    redirect/site URLs.
 
@@ -158,6 +159,66 @@ latest `supabase/feature_updates.sql` migration.
 Calendar deletion removes a row from `calendars`. Related `calendar_members`
 and `events` rows are cleaned up by `on delete cascade`, and RLS allows this
 only for owners.
+
+## Quick Add
+
+The Day Detail view has a Quick Add input for creating events without opening
+the full sheet. Type a phrase, hit Enter, and the event sheet opens with the
+detected fields prefilled — partial matches are kept, anything missing is
+left blank for you to fill in.
+
+### Syntax
+
+A Quick Add phrase mixes a free-text title with optional date, time, and
+duration tokens. The parser walks the input in passes; tokens it doesn't
+recognize stay in the title.
+
+| Token       | Examples                                         |
+|-------------|--------------------------------------------------|
+| Date        | `today`, `tomorrow`, `Monday`–`Sunday`, `2026-05-12` |
+| Time range  | `9-17`, `9:30-17:30`, `9 to 17`                  |
+| Single time | `14:00`, `18:30`, `9`, `9am`, `1pm`              |
+| Duration    | `for 1h`, `for 30m`, `for 2h30m`                 |
+
+Examples:
+
+- `Work tomorrow 9-17` → "Work" tomorrow, 09:00–17:00
+- `Dentist Friday 14:00` → "Dentist" next Friday, 14:00–15:00
+- `Gym today 18:30` → "Gym" today, 18:30–19:30
+- `Meeting Monday 10-11` → "Meeting" next Monday, 10:00–11:00
+- `Standup tomorrow 9 for 30m` → "Standup" tomorrow, 09:00–09:30
+
+If a phrase is unrecognizable (no title, no date, no time), Quick Add shows
+a toast and logs the raw input + parser result to the browser console.
+
+### Custom Quick Add templates
+
+Settings → **Custom Quick Adds** lets you define template shortcuts that
+prefill Quick Add results. Each template has:
+
+- **Shortcut keyword** — unique per user, no spaces. Matches the first word
+  of a Quick Add phrase (case-insensitive).
+- **Default title** — used when the rest of the phrase parses as no title.
+- **Default duration (minutes)** — used as the event length when no time
+  range or `for …` duration is given in the phrase.
+- **Default tag** *(optional)* — applied to the event sheet on open.
+- **Default calendar** *(optional)* — selected on the event sheet on open
+  (only if you can still edit it).
+
+When the first whitespace-delimited token matches a template's shortcut, the
+template's defaults apply, and any parsed date/time from the rest of the
+phrase layers on top:
+
+- Template `work` (default title "Work", duration 480m, tag Work) +
+  `work tomorrow 9` → "Work", tomorrow, 09:00–17:00, Work tag.
+- Template `gym` (default title "Gym", duration 60m) +
+  `gym today 18:30` → "Gym", today, 18:30–19:30.
+- Template `lunch` (duration 45m) + `lunch friday 12 with Anna` →
+  "with Anna", Friday, 12:00–12:45 (parsed title overrides default title).
+
+Templates are stored in the `quick_add_templates` Supabase table. Run
+`supabase/2026-05-add-quick-add-templates.sql` in the SQL editor to create
+the table and RLS policies on an existing project.
 
 ## Mobile UI notes
 
@@ -257,6 +318,8 @@ mobile viewport and watch the browser console:
 - Add an event from day detail and confirm the selected date is prefilled.
 - Add a task from day detail, then complete and uncomplete it from Tasks.
 - Create, edit, and delete a custom tag in Settings.
+- Create a custom Quick Add template, then verify a phrase starting with
+  that shortcut prefills its defaults and that parsed date/time still wins.
 - Share a calendar by email and verify unknown emails show a friendly error.
 - Switch away from the browser/app and return; confirm data resyncs and
   realtime subscriptions still work without duplicated updates.

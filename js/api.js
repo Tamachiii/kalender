@@ -124,6 +124,49 @@ export async function deleteTag(id) {
   if (error) throw error;
 }
 
+// Graceful fallback like fetchCalendars: if quick_add_templates is missing
+// (migration not run yet) we resolve to [] rather than throw, so the rest of
+// the app keeps working. Anything else still bubbles up.
+export async function fetchQuickAddTemplates() {
+  const { data, error } = await supabase
+    .from('quick_add_templates')
+    .select('*')
+    .order('created_at', { ascending: true });
+  if (error) {
+    if (error.code === '42P01' || /quick_add_templates/i.test(error.message || '')) {
+      return { rows: [], missingTable: true };
+    }
+    throw error;
+  }
+  return { rows: data, missingTable: false };
+}
+
+export async function createQuickAddTemplate(payload) {
+  const { data, error } = await supabase
+    .from('quick_add_templates')
+    .insert(payload)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateQuickAddTemplate(id, payload) {
+  const { data, error } = await supabase
+    .from('quick_add_templates')
+    .update(payload)
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteQuickAddTemplate(id) {
+  const { error } = await supabase.from('quick_add_templates').delete().eq('id', id);
+  if (error) throw error;
+}
+
 export async function shareCalendar({ calendar_id, email, role }) {
   const { data, error } = await supabase
     .rpc('share_calendar_by_email', {

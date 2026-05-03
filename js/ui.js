@@ -86,6 +86,19 @@ export function bindElements() {
     'share-role',
     'share-error',
     'type-picker-modal',
+    'quick-add-template-list',
+    'new-quick-add-template-btn',
+    'quick-add-template-modal',
+    'quick-add-template-form',
+    'quick-add-template-modal-title',
+    'quick-add-template-id',
+    'quick-add-template-shortcut',
+    'quick-add-template-title',
+    'quick-add-template-duration',
+    'quick-add-template-tag',
+    'quick-add-template-calendar',
+    'quick-add-template-error',
+    'delete-quick-add-template-btn',
     'toast',
   ].forEach((id) => {
     els[toCamel(id)] = document.getElementById(id);
@@ -126,6 +139,7 @@ export function renderUser() {
 export function renderAll() {
   renderCalendars();
   renderTags();
+  renderQuickAddTemplates();
   renderCategoryFilters();
   renderCalendar();
   renderWeeklyOverview();
@@ -213,6 +227,104 @@ export function renderTags() {
     `;
     els.tagList.append(row);
   });
+}
+
+export function renderQuickAddTemplates() {
+  if (!els.quickAddTemplateList) return;
+  els.quickAddTemplateList.innerHTML = '';
+
+  if (!state.quickAddTemplates.length) {
+    els.quickAddTemplateList.innerHTML =
+      '<p class="empty-note">No quick-add shortcuts yet.</p>';
+    return;
+  }
+
+  state.quickAddTemplates.forEach((template) => {
+    const tag = template.default_tag ? findTag(template.default_tag) : null;
+    const calendar = template.default_calendar_id
+      ? state.calendars.find((c) => c.id === template.default_calendar_id)
+      : null;
+    const meta = [
+      `${template.default_duration_minutes}m`,
+      tag ? tag.name : null,
+      calendar ? calendar.name : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    const row = document.createElement('div');
+    row.className = 'quick-add-template-item';
+    row.dataset.quickAddTemplateId = template.id;
+    row.innerHTML = `
+      <div class="quick-add-template-main">
+        <strong>${escapeHtml(template.shortcut)}</strong>
+        <span class="quick-add-template-title">
+          ${escapeHtml(template.default_title || '(no default title)')}
+        </span>
+        <small>${escapeHtml(meta)}</small>
+      </div>
+      <div class="quick-add-template-actions">
+        <button class="quick-add-template-edit" type="button">Edit</button>
+        <button class="quick-add-template-delete" type="button">Delete</button>
+      </div>
+    `;
+    els.quickAddTemplateList.append(row);
+  });
+}
+
+export function openQuickAddTemplateModal(template = null) {
+  if (!els.quickAddTemplateModal) return;
+  els.quickAddTemplateModalTitle.textContent = template ? 'Edit quick-add' : 'New quick-add';
+  els.quickAddTemplateId.value = template?.id || '';
+  els.quickAddTemplateShortcut.value = template?.shortcut || '';
+  els.quickAddTemplateTitle.value = template?.default_title || '';
+  els.quickAddTemplateDuration.value = template?.default_duration_minutes ?? 60;
+
+  els.quickAddTemplateTag.innerHTML =
+    '<option value="">No default tag</option>' +
+    allTags()
+      .map(
+        (tag) =>
+          `<option value="${escapeHtml(tag.id)}" ${
+            tag.id === template?.default_tag ? 'selected' : ''
+          }>${escapeHtml(tag.name)}</option>`,
+      )
+      .join('');
+
+  els.quickAddTemplateCalendar.innerHTML =
+    '<option value="">No default calendar</option>' +
+    state.calendars
+      .filter((c) => !c.archived_at)
+      .map(
+        (calendar) =>
+          `<option value="${calendar.id}" ${
+            calendar.id === template?.default_calendar_id ? 'selected' : ''
+          }>${escapeHtml(calendar.name)}</option>`,
+      )
+      .join('');
+
+  els.deleteQuickAddTemplateBtn.hidden = !template;
+  els.quickAddTemplateError.textContent = '';
+  els.quickAddTemplateModal.showModal();
+}
+
+export function readQuickAddTemplateForm() {
+  const shortcut = els.quickAddTemplateShortcut.value.trim();
+  if (!shortcut) throw new Error('Shortcut keyword is required.');
+  if (/\s/.test(shortcut)) {
+    throw new Error('Shortcut keyword cannot contain spaces.');
+  }
+  const duration = Number(els.quickAddTemplateDuration.value);
+  if (!Number.isFinite(duration) || duration < 1 || duration > 1440) {
+    throw new Error('Duration must be between 1 and 1440 minutes.');
+  }
+  return {
+    id: els.quickAddTemplateId.value || null,
+    shortcut,
+    default_title: els.quickAddTemplateTitle.value.trim(),
+    default_duration_minutes: Math.round(duration),
+    default_tag: els.quickAddTemplateTag.value || null,
+    default_calendar_id: els.quickAddTemplateCalendar.value || null,
+  };
 }
 
 export function renderCalendar() {

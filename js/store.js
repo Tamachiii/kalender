@@ -6,6 +6,7 @@ export const state = {
   activeCalendarId: null,
   events: [],
   tags: [],
+  quickAddTemplates: [],
   selectedDate: new Date(),
   dayDetailDate: null,
   view: 'month',
@@ -46,6 +47,14 @@ export function syncSelectedTags() {
     if (!validIds.has(id)) state.selectedCategories.delete(id);
   });
   validIds.forEach((id) => state.selectedCategories.add(id));
+}
+
+export function findQuickAddTemplateByShortcut(shortcut) {
+  if (!shortcut) return null;
+  const needle = shortcut.toLowerCase();
+  return (
+    state.quickAddTemplates.find((template) => template.shortcut.toLowerCase() === needle) || null
+  );
 }
 
 export function visibleEvents() {

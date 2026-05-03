@@ -131,6 +131,23 @@
               </div>
               <div id="tag-list" class="tag-list"></div>
             </section>
+            <section class="side-section quick-add-templates-section">
+              <div class="section-heading">
+                <h2>Custom Quick Adds</h2>
+                <button
+                  id="new-quick-add-template-btn"
+                  class="icon-button"
+                  type="button"
+                  title="Create quick-add template"
+                >
+                  +
+                </button>
+              </div>
+              <p class="settings-helper">
+                Type a shortcut keyword in Quick Add to apply these defaults.
+              </p>
+              <div id="quick-add-template-list" class="quick-add-template-list"></div>
+            </section>
             <div class="settings-actions">
               <button id="theme-toggle" class="ghost-action" type="button">Dark mode</button>
               <button id="logout-btn" class="ghost-action" type="button">Sign out</button>
@@ -284,6 +301,72 @@
         <p id="tag-error" class="form-message" role="alert"></p>
         <div class="modal-actions">
           <button id="delete-tag-btn" class="danger-action" type="button">Delete</button>
+          <span></span>
+          <button class="ghost-action" type="button" data-close-modal>Cancel</button>
+          <button class="primary-action" type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="quick-add-template-modal" class="modal quick-add-template-modal">
+      <form id="quick-add-template-form" method="dialog">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Quick Add</p>
+            <h2 id="quick-add-template-modal-title">New quick-add</h2>
+          </div>
+          <button class="icon-button" value="cancel" type="button" data-close-modal>x</button>
+        </div>
+        <input id="quick-add-template-id" type="hidden" />
+        <label>
+          Shortcut keyword
+          <input
+            id="quick-add-template-shortcut"
+            type="text"
+            maxlength="32"
+            autocomplete="off"
+            placeholder="work"
+            required
+          />
+        </label>
+        <label>
+          Default title
+          <input
+            id="quick-add-template-title"
+            type="text"
+            maxlength="120"
+            placeholder="Work"
+          />
+        </label>
+        <label>
+          Default duration (minutes)
+          <input
+            id="quick-add-template-duration"
+            type="number"
+            min="1"
+            max="1440"
+            step="1"
+            value="60"
+            required
+          />
+        </label>
+        <label>
+          Default tag
+          <select id="quick-add-template-tag">
+            <option value="">No default tag</option>
+          </select>
+        </label>
+        <label>
+          Default calendar
+          <select id="quick-add-template-calendar">
+            <option value="">No default calendar</option>
+          </select>
+        </label>
+        <p id="quick-add-template-error" class="form-message" role="alert"></p>
+        <div class="modal-actions">
+          <button id="delete-quick-add-template-btn" class="danger-action" type="button">
+            Delete
+          </button>
           <span></span>
           <button class="ghost-action" type="button" data-close-modal>Cancel</button>
           <button class="primary-action" type="submit">Save</button>
