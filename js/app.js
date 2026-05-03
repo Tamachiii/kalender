@@ -30,6 +30,9 @@ import {
   openEventModal,
   openTagModal,
   openShareModal,
+  openTypePicker,
+  closeTypePicker,
+  consumePendingTypePickerDate,
   readEventForm,
   readTagForm,
   renderAll,
@@ -156,12 +159,29 @@ function bindUiEvents() {
   els.bottomTabs.forEach((tab) => {
     tab.addEventListener('click', () => {
       if (tab.dataset.tab === 'create') {
-        openEventModal();
+        openTypePicker(state.dayDetailDate || state.selectedDate);
         return;
       }
       setActivePanel(tab.dataset.tab);
     });
   });
+
+  if (els.typePickerModal) {
+    els.typePickerModal.addEventListener('click', (event) => {
+      const option = event.target.closest('[data-type-pick]');
+      if (!option) return;
+      const type = option.dataset.typePick;
+      const date = consumePendingTypePickerDate() || state.dayDetailDate || state.selectedDate;
+      closeTypePicker();
+      if (type === 'task') {
+        openEventModal(null, date, { title: 'Task: ' });
+      } else if (type === 'event') {
+        openEventModal(null, date);
+      } else {
+        console.warn('[type-picker] unknown type', type);
+      }
+    });
+  }
 
   els.eventSearch.addEventListener('input', () => {
     state.search = els.eventSearch.value;
@@ -252,15 +272,8 @@ function bindUiEvents() {
       return;
     }
 
-    if (event.target.closest('[data-day-add-event]')) {
-      openEventModal(null, state.dayDetailDate || state.selectedDate);
-      return;
-    }
-
-    if (event.target.closest('[data-day-add-task]')) {
-      openEventModal(null, state.dayDetailDate || state.selectedDate, {
-        title: 'Task: ',
-      });
+    if (event.target.closest('[data-day-add]')) {
+      openTypePicker(state.dayDetailDate || state.selectedDate);
       return;
     }
 

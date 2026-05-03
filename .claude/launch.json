@@ -1,0 +1,20 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "kalender",
+      "runtimeExecutable": "wsl.exe",
+      "runtimeArgs": [
+        "-d",
+        "Ubuntu",
+        "--cd",
+        "/home/tamachi/kalender",
+        "--",
+        "bash",
+        "-lc",
+        "node server.mjs"
+      ],
+      "port": 4173
+    }
+  ]
+}

@@ -216,6 +216,26 @@
       </form>
     </dialog>
 
+    <dialog id="type-picker-modal" class="modal type-picker-modal" aria-labelledby="type-picker-title">
+      <div class="modal-header">
+        <div>
+          <p class="eyebrow">New</p>
+          <h2 id="type-picker-title">What are you adding?</h2>
+        </div>
+        <button class="icon-button" type="button" data-close-modal>x</button>
+      </div>
+      <div class="type-picker-options" role="group" aria-label="Pick a type">
+        <button class="type-picker-option" type="button" data-type-pick="event">
+          <strong>Event</strong>
+          <span>Time-based with start &amp; end</span>
+        </button>
+        <button class="type-picker-option" type="button" data-type-pick="task">
+          <strong>Task</strong>
+          <span>Something to get done that day</span>
+        </button>
+      </div>
+    </dialog>
+
     <dialog id="calendar-modal" class="modal">
       <form id="calendar-form" method="dialog">
         <div class="modal-header">

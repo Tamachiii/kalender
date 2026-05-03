@@ -1123,8 +1123,55 @@ textarea:focus {
 
 .day-detail-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
   gap: 10px;
+}
+
+.day-detail-add {
+  min-height: 48px;
+  font-size: 1rem;
+}
+
+.type-picker-modal[open] {
+  width: min(92vw, 420px);
+}
+
+.type-picker-options {
+  display: grid;
+  gap: 10px;
+  padding: 4px 0 8px;
+}
+
+.type-picker-option {
+  display: grid;
+  gap: 4px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--surface-2);
+  color: var(--ink);
+  padding: 16px 18px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    transform 100ms ease;
+}
+
+.type-picker-option:hover {
+  background: color-mix(in srgb, var(--surface-2) 80%, var(--ink) 8%);
+}
+
+.type-picker-option:active {
+  transform: scale(0.99);
+}
+
+.type-picker-option strong {
+  font-size: 1.05rem;
+}
+
+.type-picker-option span {
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 .today-dashboard {

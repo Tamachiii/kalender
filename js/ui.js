@@ -85,6 +85,7 @@ export function bindElements() {
     'share-user-id',
     'share-role',
     'share-error',
+    'type-picker-modal',
     'toast',
   ].forEach((id) => {
     els[toCamel(id)] = document.getElementById(id);
@@ -387,6 +388,28 @@ export function closeDayDetail() {
   renderCalendar();
 }
 
+let pendingTypePickerDate = null;
+
+export function openTypePicker(date = null) {
+  pendingTypePickerDate = date ? new Date(date) : null;
+  if (!els.typePickerModal) {
+    console.warn('[type-picker] modal element missing — falling back to event modal');
+    openEventModal(null, pendingTypePickerDate);
+    return;
+  }
+  els.typePickerModal.showModal();
+}
+
+export function closeTypePicker() {
+  if (els.typePickerModal?.open) els.typePickerModal.close();
+}
+
+export function consumePendingTypePickerDate() {
+  const date = pendingTypePickerDate;
+  pendingTypePickerDate = null;
+  return date;
+}
+
 export function openCalendarModal() {
   els.calendarName.value = '';
   els.calendarColor.value = '#92c5fc';
@@ -512,8 +535,7 @@ function renderDayDetail(date) {
       </form>
 
       <div class="day-detail-actions">
-        <button class="primary-action" type="button" data-day-add-event>Add event</button>
-        <button class="ghost-action" type="button" data-day-add-task>Add task</button>
+        <button class="primary-action day-detail-add" type="button" data-day-add>Add</button>
       </div>
 
       <section class="today-dashboard">

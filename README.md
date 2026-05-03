@@ -33,6 +33,69 @@ node server.mjs
 A static server is required (rather than opening `index.html` directly) because
 the app loads ES modules.
 
+#### What the dev environment actually does
+
+There is no offline mock. Whatever Supabase URL and publishable key you put in
+`js/config.js` is what the local app hits — **the same project as production
+if you reuse the prod key, or a separate dev project if you point at one**.
+Pick consciously: poking at events on localhost while pointed at the prod
+project will mutate prod data through RLS just like the deployed site would.
+A common pattern is to keep a second Supabase project for dev and switch the
+config file's two values when iterating.
+
+If sign-in fails with `Invalid login credentials`, it is almost never a local
+environment issue (password sign-in does not enforce Site URL or CORS). The
+two real causes are:
+
+- The key in `js/config.js` points at a project where the user does not exist
+  (or `email_confirmed_at` is null on that user's row).
+- Wrong password.
+
+Fix by creating/confirming the user in Supabase Studio → Authentication →
+Users on the project the key actually points at.
+
+#### Claude Preview integration
+
+`.claude/launch.json` registers the static server with the Claude Preview
+tool so a session can start it, screenshot it, and read browser console logs
+without leaving the chat:
+
+```jsonc
+// .claude/launch.json
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "kalender",
+      "runtimeExecutable": "wsl.exe",
+      "runtimeArgs": [
+        "-d", "Ubuntu",
+        "--cd", "/home/tamachi/kalender",
+        "--", "bash", "-lc", "node server.mjs"
+      ],
+      "port": 4173
+    }
+  ]
+}
+```
+
+The `wsl.exe` wrapper is needed because Claude Code runs on Windows while the
+project lives inside WSL (`\\wsl.localhost\ubuntu\…`). Node is installed in
+WSL, not on the Windows PATH, so a direct `node server.mjs` from the Windows
+side fails with `ENOENT`. WSL2's localhost forwarder makes `127.0.0.1:4173`
+reachable from the Windows-side preview pane automatically. If you switch
+distro or the WSL home path, update `-d` and `--cd`. If you run Claude Code
+natively on macOS/Linux against a checked-out copy, replace the entry with:
+
+```jsonc
+{ "name": "kalender", "runtimeExecutable": "node", "runtimeArgs": ["server.mjs"], "port": 4173 }
+```
+
+To use it inside a session: ask Claude to "start the preview server" — it
+will call `preview_start` on the `kalender` config, and from there it can
+screenshot the page, evaluate JS in the page context, and tail the browser
+console while you click around.
+
 ### CI / GitHub Pages
 
 `.github/workflows/deploy.yml` regenerates `js/config.js` on every deploy from
@@ -99,8 +162,45 @@ only for owners.
 ## Mobile UI notes
 
 The shell is mobile-first with four bottom tabs: **Calendar** (day/week/month
-+ swipe), **Tasks** (search, filters, weekly overview), **Create** (new
-event sheet), **Settings** (calendars, sharing, theme, sign out).
++ swipe), **Tasks** (search, filters, weekly overview), **Create** (opens the
+type picker), **Settings** (calendars, sharing, theme, sign out).
+
+### Day Detail View
+
+Tapping any date in the month view opens the Day Detail View — a focused,
+mobile-first screen for that day:
+
+- A back action returns to the month view.
+- A header shows the selected date in long form ("Friday, May 1").
+- A single primary **Add** button opens the type picker (Event vs Task).
+- Quick Add stays available for power-users who want to type a phrase like
+  "Dentist Friday 14:00" and skip the picker.
+- Three lists follow: **Events**, **Tasks**, and **Upcoming** (the next few
+  events from later days). Empty sections show a quiet placeholder line.
+- Tapping any item in those lists opens the existing edit sheet for that
+  event.
+
+The Day Detail View has no horizontal scroll; lists wrap and clip overflowing
+text with an ellipsis.
+
+### Event vs Task add flow
+
+There is a single create flow used everywhere — the bottom-nav **Create** tab
+and the Day-Detail **Add** button both open the same type-picker modal:
+
+1. Tap **Add** (or the Create tab) → the type picker shows two large,
+   touch-friendly options: **Event** or **Task**.
+2. Picking **Event** opens the event sheet with the standard fields and the
+   selected day prefilled as the date.
+3. Picking **Task** opens the same sheet, with the title prefilled as
+   `Task: ` so the user can finish the title in one tap. The selected day is
+   still prefilled as the date.
+4. Both flows write to the same `events` table — a "task" is just an event
+   whose title starts with `Task:`. There is no separate task entity.
+
+Because both options reuse the existing event sheet, calendar membership,
+RLS, optimistic updates, and tag selection all work identically for events
+and tasks.
 
 Specific UI invariants (day-detail flow, full-width day columns, no desktop
 sidebars) live in [CLAUDE.md](CLAUDE.md) under "Mobile UI constraints" — read
