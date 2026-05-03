@@ -7,6 +7,8 @@ const APP_SHELL = [
   './js/api.js',
   './js/config.js',
   './js/dateUtils.js',
+  './js/htmlSafe.js',
+  './js/quickAdd.js',
   './js/store.js',
   './js/supabaseClient.js',
   './js/ui.js',
