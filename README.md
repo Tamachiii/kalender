@@ -73,68 +73,11 @@ RLS ensures users can only read calendars they belong to. Owners can share
 calendars, owners and collaborators can modify events, and viewers can only
 read.
 
-## Authentication and ownership
+## Architecture, RLS, and schema changes
 
-The frontend signs users in with Supabase Auth email/password. After login,
-Supabase stores the session in the browser and attaches the authenticated
-user's JWT to database requests made with the publishable key.
-
-Calendar creation in `js/api.js` sets `owner_id` to the authenticated user's
-ID. The database also defaults `calendars.owner_id` to `auth.uid()`, and the
-RLS policy verifies the submitted owner is the current authenticated user. A
-user cannot create a calendar for someone else by editing browser code.
-
-After insert, the `calendars_add_owner_member` trigger writes an `owner` row
-into `calendar_members`. That membership is what makes the calendar visible
-and enables future owner actions.
-
-## RLS policy model
-
-RLS must stay enabled on `calendars`, `calendar_members`, and `events`. The
-app uses the browser publishable key, so the database is the authorization
-boundary.
-
-The policies are:
-
-- `calendars INSERT`: authenticated users can insert only when
-  `owner_id = auth.uid()`.
-- `calendars SELECT`: authenticated users can read calendars they own or where
-  they have a `calendar_members` row.
-- `calendars UPDATE/DELETE`: only owners can modify or delete calendars.
-- `calendar_members SELECT`: users can read their own memberships; owners can
-  read memberships for calendars they own.
-- `calendar_members INSERT/UPDATE/DELETE`: only calendar owners can manage
-  sharing.
-- `events SELECT`: calendar members can read events.
-- `events INSERT/UPDATE/DELETE`: owners and collaborators can modify events;
-  viewers cannot.
-- `profiles SELECT`: users can read only their own profile. Calendar sharing
-  by email goes through the `share_calendar_by_email` RPC, which checks that
-  the caller owns the calendar before resolving the target email.
-- `tags SELECT/INSERT/UPDATE/DELETE`: users can manage only their own tags.
-  Events may reference a custom tag only when that tag belongs to the current
-  user; the event also stores the tag color as a display snapshot.
-
-Helper functions such as `is_calendar_member`, `is_calendar_owner`, and
-`can_edit_calendar` are `security definer` functions so policies can check
-membership without recursive RLS checks on `calendar_members`.
-
-When changing schema or policies later, keep these rules intact:
-
-- Do not add public `anon` policies for private calendar data.
-- Do not hardcode user IDs in frontend code or SQL policies.
-- Do not remove the owner membership trigger unless calendar creation is
-  replaced by an RPC that creates the calendar and membership together.
-- Test create, read, update, delete, share, and viewer-only access with at
-  least two separate Supabase users.
-
-## Sharing calendars
-
-Open the share action beside an owned calendar and enter the target user's
-email. The browser calls the `share_calendar_by_email` RPC instead of reading
-`auth.users` directly. The function resolves the email through `profiles`,
-rejects unknown emails, and grants `viewer` or `collaborator` membership only
-if the caller is the calendar owner.
+Architectural invariants (module layering, optimistic-update pattern, the
+three-field tag rule, RLS policies, the schema-change runbook) live in
+[CLAUDE.md](CLAUDE.md). Read it before making non-trivial changes.
 
 ## Tags and archiving
 
@@ -155,30 +98,13 @@ only for owners.
 
 ## Mobile UI notes
 
-The app shell is mobile-first. The viewport disables accidental page zoom and
-uses `100dvh` plus safe-area padding so the authenticated calendar appears at
-the correct scale immediately after login. The main app uses four bottom tabs:
+The shell is mobile-first with four bottom tabs: **Calendar** (day/week/month
++ swipe), **Tasks** (search, filters, weekly overview), **Create** (new
+event sheet), **Settings** (calendars, sharing, theme, sign out).
 
-- **Calendar** — day, week, and month views with swipe navigation.
-- **Tasks** — search, category filters, and weekly event overview.
-- **Create** — opens the new event form without overlaying the calendar.
-- **Settings** — calendar selection, sharing, theme, and sign out.
-
-In month view, tapping a day opens a day-detail view rather than opening the
-event form. The detail view shows that day's events/tasks, quick add, and
-explicit add event/task actions. Use this flow when testing date accuracy
-because it avoids accidental create actions from simple day selection.
-
-The app includes `manifest.webmanifest`, app icons, mobile web app meta tags,
-and a lightweight service worker so it can run as a standalone app when added
-to the home screen. Week and day views snap to complete day columns on phones;
-do not change them to partial-width columns (reintroduces the clipped-next-day
-bug).
-
-Keep primary actions touch-friendly. New event creation belongs in the Create
-tab; less-frequent controls belong in Tasks or Settings. Avoid adding
-desktop-style sidebars to the mobile layout — they can force the calendar grid
-to render too wide after login.
+Specific UI invariants (day-detail flow, full-width day columns, no desktop
+sidebars) live in [CLAUDE.md](CLAUDE.md) under "Mobile UI constraints" — read
+those before changing layout.
 
 ## GitHub Pages deployment
 
@@ -186,14 +112,13 @@ The repository deploys via GitHub Actions (`.github/workflows/deploy.yml`):
 
 1. On push to `main` (or manual `workflow_dispatch`), the workflow regenerates
    `js/config.js` from `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` secrets.
-2. The whole repository is uploaded as the Pages artifact and deployed via
-   `actions/deploy-pages@v4`. No build step is required.
-3. Add the resulting Pages URL to your Supabase project's Authentication URL
+2. The workflow stamps the commit SHA into the `__BUILD_VERSION__` placeholder
+   in `index.html` and `sw.js`, so every deploy invalidates the service-worker
+   cache automatically. No manual version bump needed.
+3. The repository is uploaded as the Pages artifact and deployed via
+   `actions/deploy-pages@v4`. No build step.
+4. Add the resulting Pages URL to your Supabase project's Authentication URL
    configuration.
-
-After any JS/CSS change, **bump both** the `?v=N` query in `index.html` and
-`CACHE_NAME` in `sw.js` together. Mismatched versions cause a blank-screen
-regression on Pages because the service worker holds a stale shell.
 
 ## Troubleshooting blank screens
 
@@ -248,5 +173,6 @@ Common failure modes:
   and that any custom `tag_id` belongs to the current authenticated user.
 - **Archive/restore errors** — run the latest feature migration so
   `calendars.archived_at` exists.
-- **Stale UI after deployment** — bump the asset query version and
-  service-worker cache name together.
+- **Stale UI after deployment** — should not occur (cache version is stamped
+  per-commit). If it does, hard-refresh and check that the workflow's "Stamp
+  build version" step ran.

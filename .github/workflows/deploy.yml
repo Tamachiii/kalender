@@ -48,6 +48,24 @@ jobs:
             fs.writeFileSync(path, s);
           "
 
+      - name: Stamp build version into index.html and sw.js
+        env:
+          BUILD_VERSION: ${{ github.sha }}
+        run: |
+          node -e "
+            const fs = require('fs');
+            const v = process.env.BUILD_VERSION;
+            for (const path of ['index.html', 'sw.js']) {
+              const before = fs.readFileSync(path, 'utf8');
+              const after = before.split('__BUILD_VERSION__').join(v);
+              if (before === after) {
+                console.error('No __BUILD_VERSION__ placeholder found in ' + path);
+                process.exit(1);
+              }
+              fs.writeFileSync(path, after);
+            }
+          "
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 

@@ -51,6 +51,38 @@ let lastResumeAt = 0;
 let searchRenderTimer = 0;
 let refreshRequestId = 0;
 
+// Snapshot the state slices that any optimistic handler might touch, apply the
+// change, render, persist; on failure restore the snapshot and toast. Bumping
+// refreshRequestId prevents an in-flight fetchEvents from stomping our optimistic
+// state when it resolves later. See "Optimistic mutations" in CLAUDE.md.
+async function withOptimisticUpdate({ apply, persist, success, errorMessage }) {
+  const previous = {
+    events: state.events,
+    calendars: state.calendars,
+    activeCalendarId: state.activeCalendarId,
+  };
+  refreshRequestId += 1;
+  apply();
+  renderAll();
+  try {
+    const result = await persist();
+    if (success) await success(result);
+    renderAll();
+    return result;
+  } catch (error) {
+    state.events = previous.events;
+    state.calendars = previous.calendars;
+    state.activeCalendarId = previous.activeCalendarId;
+    renderAll();
+    const message =
+      typeof errorMessage === 'function'
+        ? errorMessage(error)
+        : errorMessage ?? error.message ?? 'Something went wrong.';
+    showToast(message);
+    throw error;
+  }
+}
+
 boot();
 
 async function boot() {
@@ -451,19 +483,19 @@ async function handleDeleteEvent() {
 
   eventDeleteInFlight = true;
   els.deleteEventBtn.disabled = true;
-  const previousEvents = state.events;
-  refreshRequestId += 1;
-  state.events = state.events.filter((item) => item.id !== eventId);
   els.eventModal.close();
-  renderAll();
 
   try {
-    await deleteEvent(eventId);
+    await withOptimisticUpdate({
+      apply: () => {
+        state.events = state.events.filter((item) => item.id !== eventId);
+      },
+      persist: () => deleteEvent(eventId),
+      errorMessage: (error) => error.message || 'Event could not be deleted.',
+    });
     showToast('Event deleted');
-  } catch (error) {
-    state.events = previousEvents;
-    renderAll();
-    showToast(error.message || 'Event could not be deleted.');
+  } catch {
+    // rollback + toast handled inside withOptimisticUpdate
   } finally {
     eventDeleteInFlight = false;
     els.deleteEventBtn.disabled = false;
@@ -570,26 +602,32 @@ async function handleArchiveCalendar(calendarId) {
   if (!calendar || calendar.role !== 'owner') return;
 
   const archived = !calendar.archived_at;
-  const previousCalendars = state.calendars;
   const nextArchivedAt = archived ? new Date().toISOString() : null;
-  state.calendars = state.calendars.map((item) =>
-    item.id === calendarId ? { ...item, archived_at: nextArchivedAt } : item,
-  );
-  if (archived && state.activeCalendarId === calendarId) {
-    state.activeCalendarId = state.calendars.find((item) => !item.archived_at)?.id || null;
-  }
-  renderAll();
 
   try {
-    await updateCalendarArchive(calendarId, archived);
-    await loadWorkspace();
-    state.showArchivedCalendars = archived || state.showArchivedCalendars;
-    renderAll();
+    await withOptimisticUpdate({
+      apply: () => {
+        state.calendars = state.calendars.map((item) =>
+          item.id === calendarId ? { ...item, archived_at: nextArchivedAt } : item,
+        );
+        if (archived && state.activeCalendarId === calendarId) {
+          state.activeCalendarId =
+            state.calendars.find((item) => !item.archived_at)?.id || null;
+        }
+      },
+      persist: () => updateCalendarArchive(calendarId, archived),
+      success: async () => {
+        await loadWorkspace();
+        state.showArchivedCalendars = archived || state.showArchivedCalendars;
+      },
+      errorMessage: (error) =>
+        error.message?.includes('archived_at')
+          ? 'Run the calendar archive migration.'
+          : error.message,
+    });
     showToast(archived ? 'Calendar archived' : 'Calendar restored');
-  } catch (error) {
-    state.calendars = previousCalendars;
-    renderAll();
-    showToast(error.message?.includes('archived_at') ? 'Run the calendar archive migration.' : error.message);
+  } catch {
+    // rollback + toast handled inside withOptimisticUpdate
   }
 }
 
@@ -602,18 +640,18 @@ async function handleToggleComplete(eventId) {
   }
 
   const nextCompleted = !event.completed;
-  const previousCompleted = event.completed;
-  refreshRequestId += 1;
-  event.completed = nextCompleted;
-  renderAll();
 
   try {
-    await setEventCompleted(eventId, nextCompleted);
-  } catch (error) {
-    const currentEvent = state.events.find((item) => item.id === eventId);
-    if (currentEvent) currentEvent.completed = previousCompleted;
-    renderAll();
-    showToast(error.message);
+    await withOptimisticUpdate({
+      apply: () => {
+        state.events = state.events.map((item) =>
+          item.id === eventId ? { ...item, completed: nextCompleted } : item,
+        );
+      },
+      persist: () => setEventCompleted(eventId, nextCompleted),
+    });
+  } catch {
+    // rollback + toast handled inside withOptimisticUpdate
   }
 }
 
