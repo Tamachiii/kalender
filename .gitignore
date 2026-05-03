@@ -1,0 +1,14 @@
+# Local Supabase credentials. Generated at deploy time by .github/workflows/deploy.yml
+# from the SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY repository secrets.
+# For local dev, copy js/config.example.js to js/config.js and fill in your own values.
+js/config.js
+
+# Local static-server logs (server.mjs)
+server.log
+server.err
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

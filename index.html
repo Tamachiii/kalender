@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#101924" media="(prefers-color-scheme: dark)" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Kalender" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <title>Kalender</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="assets/icon-192.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="css/styles.css?v=11" />
+  </head>
+  <body>
+    <main id="app" class="app-shell">
+      <section id="login-view" class="login-view" aria-labelledby="login-title">
+        <div class="login-card">
+          <div class="login-heading">
+            <div class="brand-mark">K</div>
+            <h1 id="login-title">Kalender</h1>
+            <p class="login-copy">A quiet shared calendar for the plans that matter.</p>
+          </div>
+
+          <form id="login-form" class="login-panel">
+            <label>
+              Email
+              <input id="email" type="email" autocomplete="email" required />
+            </label>
+            <label>
+              Password
+              <input
+                id="password"
+                type="password"
+                autocomplete="current-password"
+                required
+              />
+            </label>
+            <button class="primary-action" type="submit">Sign in</button>
+            <p id="login-error" class="form-message" role="alert"></p>
+          </form>
+        </div>
+      </section>
+
+      <section id="calendar-view" class="calendar-view hidden">
+        <div class="app-panels">
+          <section class="app-panel active" data-panel="calendar">
+            <header class="topbar">
+              <div class="mobile-brand">
+                <div class="brand-mark">K</div>
+                <div>
+                  <strong>Kalender</strong>
+                  <span id="user-email"></span>
+                </div>
+              </div>
+              <div class="view-switcher" role="tablist" aria-label="Calendar view">
+                <button class="view-tab active" data-view="month" type="button">Month</button>
+                <button class="view-tab" data-view="week" type="button">Week</button>
+                <button class="view-tab" data-view="day" type="button">Day</button>
+              </div>
+            </header>
+
+            <div class="date-controls">
+              <button id="prev-btn" class="icon-button" type="button" title="Previous period">&lt;</button>
+              <h1 id="period-title"></h1>
+              <button id="today-btn" class="ghost-action" type="button">Today</button>
+              <button id="next-btn" class="icon-button" type="button" title="Next period">&gt;</button>
+            </div>
+
+            <section id="calendar-grid" class="calendar-grid" aria-live="polite"></section>
+          </section>
+
+          <section class="app-panel utility-panel" data-panel="tasks">
+            <header class="panel-header">
+              <p class="eyebrow">Focus</p>
+              <h1>Tasks</h1>
+            </header>
+            <label class="search-box">
+              <span>Search events</span>
+              <input id="event-search" type="search" placeholder="Title or description" />
+            </label>
+            <div id="category-filters" class="category-filters"></div>
+            <section class="side-section overview-section">
+              <div class="section-heading">
+                <h2>This week</h2>
+              </div>
+              <div id="weekly-overview" class="weekly-overview"></div>
+            </section>
+          </section>
+
+          <section class="app-panel utility-panel" data-panel="settings">
+            <header class="panel-header">
+              <p class="eyebrow">Account</p>
+              <h1>Settings</h1>
+            </header>
+            <section class="account-card" aria-label="Signed in account">
+              <span>Signed in as</span>
+              <strong id="account-email"></strong>
+            </section>
+            <section class="side-section">
+              <div class="section-heading">
+                <h2>Calendars</h2>
+                <button id="new-calendar-btn" class="icon-button" type="button" title="Create calendar">
+                  +
+                </button>
+              </div>
+              <label class="archive-toggle">
+                <input id="archived-toggle" type="checkbox" />
+                <span>Show archived calendars</span>
+              </label>
+              <div id="calendar-list" class="calendar-list"></div>
+            </section>
+            <section class="side-section tags-section">
+              <div class="section-heading">
+                <h2>Tags</h2>
+                <button id="new-tag-btn" class="icon-button" type="button" title="Create tag">
+                  +
+                </button>
+              </div>
+              <div id="tag-list" class="tag-list"></div>
+            </section>
+            <div class="settings-actions">
+              <button id="theme-toggle" class="ghost-action" type="button">Dark mode</button>
+              <button id="logout-btn" class="ghost-action" type="button">Sign out</button>
+            </div>
+          </section>
+        </div>
+
+        <nav class="bottom-tabs" aria-label="Primary">
+          <button class="bottom-tab active" data-tab="calendar" type="button">
+            <span class="tab-icon tab-calendar" aria-hidden="true"></span>
+            Calendar
+          </button>
+          <button class="bottom-tab" data-tab="tasks" type="button">
+            <span class="tab-icon tab-tasks" aria-hidden="true"></span>
+            Tasks
+          </button>
+          <button id="new-event-btn" class="bottom-tab create-tab" data-tab="create" type="button">
+            <span class="tab-icon tab-create" aria-hidden="true"></span>
+            Create
+          </button>
+          <button class="bottom-tab" data-tab="settings" type="button">
+            <span class="tab-icon tab-settings" aria-hidden="true"></span>
+            Settings
+          </button>
+        </nav>
+      </section>
+    </main>
+
+    <dialog id="event-modal" class="modal event-sheet">
+      <form id="event-form" method="dialog">
+        <div class="modal-header">
+          <h2 id="event-modal-title">New event</h2>
+          <button class="icon-button" value="cancel" type="button" data-close-modal>x</button>
+        </div>
+
+        <input id="event-id" type="hidden" />
+        <label>
+          Title
+          <input id="event-title" type="text" maxlength="120" required />
+        </label>
+        <div class="form-grid compact-times">
+          <label>
+            Start
+            <input id="event-start" type="datetime-local" required />
+          </label>
+          <label>
+            End
+            <input id="event-end" type="datetime-local" required />
+          </label>
+        </div>
+
+        <label class="tag-picker-label">
+          Tag
+          <span id="event-tag-options" class="tag-picker"></span>
+        </label>
+
+        <details class="event-options">
+          <summary>More options</summary>
+          <label>
+            Calendar
+            <select id="event-calendar" required></select>
+          </label>
+          <label>
+            Notes
+            <textarea id="event-description" rows="2"></textarea>
+          </label>
+          <input id="event-category" type="hidden" value="work" />
+          <input id="event-tag-id" type="hidden" />
+          <input id="event-color" type="hidden" value="#92c5fc" />
+          <label class="checkbox-row">
+            <input id="event-reminder" type="checkbox" />
+            <span>Remind me 15 minutes before</span>
+          </label>
+        </details>
+
+        <p id="event-error" class="form-message" role="alert"></p>
+        <div class="modal-actions">
+          <button id="delete-event-btn" class="danger-action" type="button">Delete</button>
+          <span></span>
+          <button class="ghost-action" type="button" data-close-modal>Cancel</button>
+          <button class="primary-action" type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="calendar-modal" class="modal">
+      <form id="calendar-form" method="dialog">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Calendar</p>
+            <h2>New calendar</h2>
+          </div>
+          <button class="icon-button" value="cancel" type="button" data-close-modal>x</button>
+        </div>
+        <label>
+          Name
+          <input id="calendar-name" type="text" maxlength="80" required />
+        </label>
+        <label>
+          Color
+          <input id="calendar-color" type="color" value="#92c5fc" />
+        </label>
+        <p id="calendar-error" class="form-message" role="alert"></p>
+        <div class="modal-actions">
+          <span></span>
+          <span></span>
+          <button class="ghost-action" type="button" data-close-modal>Cancel</button>
+          <button class="primary-action" type="submit">Create</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="tag-modal" class="modal tag-modal">
+      <form id="tag-form" method="dialog">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Tag</p>
+            <h2 id="tag-modal-title">New tag</h2>
+          </div>
+          <button class="icon-button" value="cancel" type="button" data-close-modal>x</button>
+        </div>
+        <input id="tag-id" type="hidden" />
+        <label>
+          Name
+          <input id="tag-name" type="text" maxlength="32" required />
+        </label>
+        <label>
+          Color
+          <input id="tag-color" type="color" value="#92c5fc" />
+        </label>
+        <p id="tag-error" class="form-message" role="alert"></p>
+        <div class="modal-actions">
+          <button id="delete-tag-btn" class="danger-action" type="button">Delete</button>
+          <span></span>
+          <button class="ghost-action" type="button" data-close-modal>Cancel</button>
+          <button class="primary-action" type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="share-modal" class="modal">
+      <form id="share-form" method="dialog">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Sharing</p>
+            <h2 id="share-title">Share calendar</h2>
+          </div>
+          <button class="icon-button" value="cancel" type="button" data-close-modal>x</button>
+        </div>
+        <input id="share-calendar-id" type="hidden" />
+        <label>
+          Email
+          <input id="share-user-id" type="email" placeholder="person@example.com" required />
+        </label>
+        <label>
+          Role
+          <select id="share-role">
+            <option value="collaborator">Collaborator</option>
+            <option value="viewer">Viewer</option>
+          </select>
+        </label>
+        <p id="share-error" class="form-message" role="alert"></p>
+        <div class="modal-actions">
+          <span></span>
+          <span></span>
+          <button class="ghost-action" type="button" data-close-modal>Cancel</button>
+          <button class="primary-action" type="submit">Share</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <script type="module" src="js/app.js?v=11"></script>
+  </body>
+</html>

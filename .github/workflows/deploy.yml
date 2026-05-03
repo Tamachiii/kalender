@@ -1,0 +1,68 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one in-flight Pages deploy at a time. Don't cancel an active deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate js/config.js from secrets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_PUBLISHABLE_KEY" ]; then
+            echo "::error::SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY repository secrets must be set."
+            exit 1
+          fi
+          cp js/config.example.js js/config.js
+          # Use Node + env vars (not shell interpolation) so the secret values
+          # never reach the shell command line and any literal '/' or '$' in
+          # the secret can't break sed-style substitution.
+          node -e "
+            const fs = require('fs');
+            const path = 'js/config.js';
+            let s = fs.readFileSync(path, 'utf8');
+            s = s.replace('__SUPABASE_URL__', process.env.SUPABASE_URL);
+            s = s.replace('__SUPABASE_PUBLISHABLE_KEY__', process.env.SUPABASE_PUBLISHABLE_KEY);
+            if (s.includes('__SUPABASE_URL__') || s.includes('__SUPABASE_PUBLISHABLE_KEY__')) {
+              console.error('Placeholder substitution failed in ' + path);
+              process.exit(1);
+            }
+            fs.writeFileSync(path, s);
+          "
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
