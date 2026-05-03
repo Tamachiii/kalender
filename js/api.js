@@ -17,21 +17,27 @@ export async function signOut() {
 export async function getSession() {
   const { data, error } = await supabase.auth.getSession();
   if (error) {
+    // Session retrieval itself failed (corrupted local storage, malformed
+    // token). Clear and force re-auth.
     await supabase.auth.signOut({ scope: 'local' });
     return null;
   }
   if (!data.session) return null;
 
+  // getUser is a network call; it can transiently fail on flaky connections
+  // and at app-resume time. Don't sign the user out for that — the cached
+  // session.user is enough to keep them logged in until the next request
+  // succeeds. Only treat an explicit "user not found" (no error, no user)
+  // as a real logout signal.
   const { data: userData, error: userError } = await supabase.auth.getUser();
-  if (userError || !userData.user) {
+  if (!userError && userData?.user) {
+    return { ...data.session, user: userData.user };
+  }
+  if (!userError && !userData?.user) {
     await supabase.auth.signOut({ scope: 'local' });
     return null;
   }
-
-  return {
-    ...data.session,
-    user: userData.user,
-  };
+  return data.session;
 }
 
 export function onAuthStateChange(callback) {
@@ -241,8 +247,6 @@ export async function saveEvent(event) {
     completed: Boolean(event.completed),
   };
 
-  console.log('[event] save payload', payload);
-
   if (event.id) {
     const { data, error } = await supabase
       .from('events')
@@ -251,7 +255,6 @@ export async function saveEvent(event) {
       .select()
       .single();
     if (error) throw error;
-    console.log('[event] save response', data);
     return data;
   }
 
@@ -262,7 +265,6 @@ export async function saveEvent(event) {
     .single();
 
   if (error) throw error;
-  console.log('[event] save response', data);
   return data;
 }
 

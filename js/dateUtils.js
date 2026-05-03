@@ -1,5 +1,3 @@
-export const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
 export function startOfDay(date) {
   const next = new Date(date);
   next.setHours(0, 0, 0, 0);

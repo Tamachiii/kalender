@@ -26,6 +26,7 @@ import {
   updateTag,
 } from './api.js';
 import { addDays, addMonths, startOfDay, startOfMonthGrid, startOfWeek } from './dateUtils.js';
+import { parseQuickAddInput } from './quickAdd.js';
 import {
   canEditCalendar,
   defaultTagFor,
@@ -72,6 +73,14 @@ let lastResumeAt = 0;
 let searchRenderTimer = 0;
 let refreshRequestId = 0;
 let tagDeleteInFlight = false;
+// Realtime echoes our own writes back. Suppress the "Calendar updated" toast
+// for a short window after any local mutation finishes, so a save shows
+// exactly one toast ("Event saved") instead of two.
+let lastLocalMutationAt = 0;
+const LOCAL_ECHO_WINDOW_MS = 1500;
+function markLocalMutation() {
+  lastLocalMutationAt = Date.now();
+}
 
 // Snapshot the state slices that any optimistic handler might touch, apply the
 // change, render, persist; on failure restore the snapshot and toast. Bumping
@@ -497,7 +506,9 @@ async function setupRealtime() {
   state.realtimeChannel = subscribeToWorkspace(calendarIds, {
     onEventChange: async () => {
       await refreshEventsAndRender();
-      showToast('Calendar updated');
+      if (Date.now() - lastLocalMutationAt > LOCAL_ECHO_WINDOW_MS) {
+        showToast('Calendar updated');
+      }
     },
     // Tag inserts/updates/deletes need to land in state before any subsequent
     // event renders pick up the new color/name. Refetch tags then re-render.
@@ -564,14 +575,14 @@ async function handleEventSubmit(event) {
       ? state.events.map((item) => (item.id === payload.id ? { ...item, ...payload } : item))
       : [...state.events, optimisticEvent];
     renderAll();
-    setFormBusy(els.eventForm, true);
 
     const saved = await saveEvent(payload);
+    markLocalMutation();
     state.events = state.events.map((item) =>
       item.id === temporaryId || item.id === saved.id ? saved : item,
     );
+    renderAll();
     els.eventModal.close();
-    await refreshEventsAndRender();
     showToast('Event saved');
   } catch (error) {
     if (previousEvents) {
@@ -611,6 +622,7 @@ async function handleDeleteEvent() {
       persist: () => deleteEvent(eventId),
       errorMessage: (error) => error.message || 'Event could not be deleted.',
     });
+    markLocalMutation();
     showToast('Event deleted');
   } catch {
     // rollback + toast handled inside withOptimisticUpdate
@@ -648,17 +660,20 @@ async function handleSaveTag(event) {
     let saved;
     if (tag.id) {
       saved = await updateTag(tag.id, { name: tag.name, color: tag.color });
-      console.log('[tags] update response', saved);
-      showToast('Tag updated');
     } else {
       saved = await createTag(tag);
-      console.log('[tags] create response', saved);
-      showToast('Tag created');
     }
-    els.tagModal.close();
-    state.tags = await fetchTags();
+    markLocalMutation();
+    // Splice the saved row into state directly. Realtime would also echo it
+    // back via onTagChange (which refetches), but rendering once with the
+    // server's row keeps the modal-close flicker-free.
+    state.tags = tag.id
+      ? state.tags.map((item) => (item.id === saved.id ? saved : item))
+      : [...state.tags, saved];
     syncSelectedTags();
+    els.tagModal.close();
     renderAll();
+    showToast(tag.id ? 'Tag updated' : 'Tag created');
   } catch (error) {
     els.tagError.textContent = error.message;
   }
@@ -721,9 +736,7 @@ async function handleConfirmDeleteTag(event) {
     // events.tag_id is on delete restrict — deleteTag would fail if any event
     // still references this tag.
     const reassigned = await reassignEventsTag(tag.id, target.id);
-    console.log('[tags] reassigned events', { from: tag.id, to: target.id, count: reassigned.length });
     await deleteTag(tag.id);
-    console.log('[tags] deleted', tag.id);
 
     if (els.tagModal.open) els.tagModal.close();
     closeTagDeleteModal();
@@ -882,6 +895,7 @@ async function handleToggleComplete(eventId) {
       },
       persist: () => setEventCompleted(eventId, nextCompleted),
     });
+    markLocalMutation();
   } catch {
     // rollback + toast handled inside withOptimisticUpdate
   }
@@ -902,13 +916,25 @@ async function handleEventDrop(event) {
   const duration = oldEnd - oldStart;
   destination.setHours(oldStart.getHours(), oldStart.getMinutes(), 0, 0);
 
-  await saveEvent({
+  const moved = {
     ...calendarEvent,
     starts_at: destination.toISOString(),
     ends_at: new Date(destination.getTime() + duration).toISOString(),
-  });
-  await refreshEventsAndRender();
-  showToast('Event moved');
+  };
+
+  try {
+    await withOptimisticUpdate({
+      apply: () => {
+        state.events = state.events.map((item) => (item.id === eventId ? moved : item));
+      },
+      persist: () => saveEvent(moved),
+      errorMessage: (error) => error.message || 'Event could not be moved.',
+    });
+    markLocalMutation();
+    showToast('Event moved');
+  } catch {
+    // rollback + toast handled inside withOptimisticUpdate
+  }
 }
 
 function toggleTheme() {
@@ -922,161 +948,6 @@ function toggleTheme() {
 function syncThemeButton() {
   els.themeToggle.textContent =
     document.documentElement.dataset.theme === 'dark' ? 'Light mode' : 'Dark mode';
-}
-
-// Quick Add parser. Tokenizes the input on whitespace, walks tokens in passes
-// (date → time-range → single-time → duration), and treats anything left as
-// the title. Returns a structured result; a separate buildQuickAddDraft
-// composes start/end with template defaults layered underneath parsed values.
-const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-
-function parseTimeToken(token) {
-  if (!token) return null;
-  const match = token.match(/^(\d{1,2})(?::(\d{2}))?(am|pm)?$/i);
-  if (!match) return null;
-  let hour = Number(match[1]);
-  const minute = Number(match[2] || 0);
-  const meridiem = (match[3] || '').toLowerCase();
-  if (meridiem === 'am') {
-    if (hour === 12) hour = 0;
-    else if (hour > 12) return null;
-  } else if (meridiem === 'pm') {
-    if (hour < 12) hour += 12;
-    else if (hour > 12) return null;
-  }
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-  return { hour, minute, minutes: hour * 60 + minute };
-}
-
-function parseDurationToken(token) {
-  if (!token) return null;
-  const match = token.match(/^(?:(\d+)h)?(?:(\d+)m)?$/i);
-  if (!match || (!match[1] && !match[2])) return null;
-  const minutes = Number(match[1] || 0) * 60 + Number(match[2] || 0);
-  return minutes > 0 ? minutes : null;
-}
-
-// `referenceDate` anchors relative tokens like "today", "tomorrow", and
-// weekday names. It defaults to real `new Date()` so phrases mean what the
-// user expects regardless of which day is selected on the calendar.
-export function parseQuickAddInput(raw, referenceDate) {
-  const trimmed = (raw || '').trim();
-  const empty = {
-    ok: false,
-    title: '',
-    date: null,
-    startMinutes: null,
-    endMinutes: null,
-    durationMinutes: null,
-  };
-  if (!trimmed) return empty;
-
-  const tokens = trimmed.split(/\s+/);
-  const consumed = new Array(tokens.length).fill(false);
-  const result = { ...empty, ok: false };
-
-  const now = referenceDate || new Date();
-  for (let i = 0; i < tokens.length; i += 1) {
-    if (consumed[i]) continue;
-    const lower = tokens[i].toLowerCase();
-    if (lower === 'today') {
-      result.date = startOfDay(now);
-      consumed[i] = true;
-      break;
-    }
-    if (lower === 'tomorrow') {
-      result.date = startOfDay(addDays(now, 1));
-      consumed[i] = true;
-      break;
-    }
-    const weekdayIndex = DAY_NAMES.indexOf(lower);
-    if (weekdayIndex !== -1) {
-      const offset = ((weekdayIndex - now.getDay() + 7) % 7) || 7;
-      result.date = startOfDay(addDays(now, offset));
-      consumed[i] = true;
-      break;
-    }
-    const iso = lower.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-    if (iso) {
-      const candidate = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
-      if (!Number.isNaN(candidate.getTime())) {
-        result.date = startOfDay(candidate);
-        consumed[i] = true;
-        break;
-      }
-    }
-  }
-
-  // Pass 2: time range — single-token "H-H[:MM]" or three-token "H to H".
-  for (let i = 0; i < tokens.length; i += 1) {
-    if (consumed[i]) continue;
-    const parts = tokens[i].split(/[-–]/);
-    if (parts.length === 2 && parts[0] && parts[1]) {
-      const startT = parseTimeToken(parts[0]);
-      const endT = parseTimeToken(parts[1]);
-      if (startT && endT) {
-        result.startMinutes = startT.minutes;
-        result.endMinutes = endT.minutes;
-        consumed[i] = true;
-        break;
-      }
-    }
-    if (i + 2 < tokens.length && tokens[i + 1].toLowerCase() === 'to') {
-      const startT = parseTimeToken(tokens[i]);
-      const endT = parseTimeToken(tokens[i + 2]);
-      if (startT && endT) {
-        result.startMinutes = startT.minutes;
-        result.endMinutes = endT.minutes;
-        consumed[i] = consumed[i + 1] = consumed[i + 2] = true;
-        break;
-      }
-    }
-  }
-
-  // Pass 3: single time. "9", "14:00", "9am", or "9 pm" across two tokens.
-  if (result.startMinutes == null) {
-    for (let i = 0; i < tokens.length; i += 1) {
-      if (consumed[i]) continue;
-      const startT = parseTimeToken(tokens[i]);
-      if (startT) {
-        result.startMinutes = startT.minutes;
-        consumed[i] = true;
-        // Pick up a trailing am/pm in the next token if not already merged.
-        const next = tokens[i + 1]?.toLowerCase();
-        if (!consumed[i + 1] && (next === 'am' || next === 'pm')) {
-          const merged = parseTimeToken(`${tokens[i]}${next}`);
-          if (merged) {
-            result.startMinutes = merged.minutes;
-            consumed[i + 1] = true;
-          }
-        }
-        break;
-      }
-    }
-  }
-
-  // Pass 4: duration — "for 1h", "for 30m", "for 2h30m".
-  for (let i = 0; i < tokens.length - 1; i += 1) {
-    if (consumed[i] || consumed[i + 1]) continue;
-    if (tokens[i].toLowerCase() !== 'for') continue;
-    const minutes = parseDurationToken(tokens[i + 1]);
-    if (minutes != null) {
-      result.durationMinutes = minutes;
-      consumed[i] = consumed[i + 1] = true;
-      break;
-    }
-  }
-
-  result.title = tokens
-    .filter((_, i) => !consumed[i])
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  result.ok = Boolean(
-    result.title || result.date || result.startMinutes != null || result.durationMinutes != null,
-  );
-  return result;
 }
 
 // Build an event-modal draft from a parser result + optional template, layering
@@ -1265,15 +1136,27 @@ function setFormBusy(form, isBusy) {
   });
 }
 
+// Reminder dedupe set keyed by `${id}|${starts_at}|${reminder_minutes}`. We
+// can't put the flag on the event row because state.events is replaced wholesale
+// on every refreshEventsAndRender — without this set, every refresh would
+// re-arm a fresh setTimeout for every upcoming-reminder event.
+const scheduledReminderKeys = new Set();
+
+function reminderKey(event) {
+  return `${event.id}|${event.starts_at}|${event.reminder_minutes}`;
+}
+
 function scheduleReminders() {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   state.events.forEach((event) => {
-    if (!event.reminder_minutes || event.reminderScheduled) return;
+    if (!event.reminder_minutes) return;
+    const key = reminderKey(event);
+    if (scheduledReminderKeys.has(key)) return;
     const notifyAt =
       new Date(event.starts_at).getTime() - event.reminder_minutes * 60 * 1000;
     const delay = notifyAt - Date.now();
     if (delay > 0 && delay < 24 * 60 * 60 * 1000) {
-      event.reminderScheduled = true;
+      scheduledReminderKeys.add(key);
       window.setTimeout(() => {
         new Notification(event.title, {
           body: `Starts at ${new Date(event.starts_at).toLocaleTimeString([], {
