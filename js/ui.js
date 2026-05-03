@@ -13,14 +13,15 @@ import {
   startOfWeek,
   toLocalInputValue,
 } from './dateUtils.js';
+import { escapeHtml, safeColor } from './htmlSafe.js';
 import {
   canEditCalendar,
   defaultTagFor,
   eventTag,
-  fallbackTag,
   findTag,
   state,
   tagsForCalendar,
+  visibleEvents,
   visibleTags,
 } from './store.js';
 
@@ -181,7 +182,7 @@ export function renderCalendars() {
     }${isArchived ? ' archived' : ''}`;
     item.dataset.calendarId = calendar.id;
     item.innerHTML = `
-      <span class="calendar-color" style="--calendar-color:${calendar.color}"></span>
+      <span class="calendar-color" style="--calendar-color:${safeColor(calendar.color, '#92c5fc')}"></span>
       <span class="calendar-name">${escapeHtml(calendar.name)}</span>
       <span class="role-pill">${isArchived ? 'archived' : calendar.role}</span>
       ${
@@ -212,7 +213,7 @@ export function renderTagFilters() {
       <input type="checkbox" value="${tag.id}" ${
         state.selectedTagIds.has(tag.id) ? 'checked' : ''
       } />
-      <span style="--category-color:${tag.color}"></span>
+      <span style="--category-color:${safeColor(tag.color)}"></span>
       ${escapeHtml(tag.name)}
     `;
     els.categoryFilters.append(label);
@@ -253,7 +254,7 @@ export function renderTags() {
                 .map(
                   (tag) => `
                     <div class="tag-list-item" data-tag-id="${tag.id}">
-                      <span class="tag-dot" style="--tag-color:${tag.color}"></span>
+                      <span class="tag-dot" style="--tag-color:${safeColor(tag.color)}"></span>
                       <strong>${escapeHtml(tag.name)}</strong>
                       ${editable ? `
                         <button class="tag-edit" type="button">Edit</button>
@@ -401,7 +402,7 @@ export function renderCalendar() {
 
 export function renderWeeklyOverview() {
   const weekStart = startOfWeek(new Date());
-  const upcoming = visibleEventsForRender()
+  const upcoming = visibleEvents()
     .filter((event) => {
       const start = new Date(event.starts_at);
       return start >= weekStart && start < addDays(weekStart, 7);
@@ -415,7 +416,7 @@ export function renderWeeklyOverview() {
           .map(
             (event) => `
               <div class="overview-event ${event.completed ? 'completed' : ''}">
-                <span style="--event-color:${eventColor(event)}"></span>
+                <span style="--event-color:${safeColor(eventColor(event))}"></span>
                 <button
                   class="task-check"
                   type="button"
@@ -461,7 +462,6 @@ export function renderEventTagOptions(selectedTagId = null) {
     selected = defaultTagFor(calendarId)?.id || '';
     els.eventTagId.value = selected;
   }
-  console.log('[tag] render picker', { calendarId, selected, tagCount: tags.length });
 
   if (!tags.length) {
     els.eventTagOptions.innerHTML =
@@ -476,7 +476,7 @@ export function renderEventTagOptions(selectedTagId = null) {
           type="button"
           data-tag-id="${tag.id}"
           aria-pressed="${tag.id === selected ? 'true' : 'false'}"
-          style="--tag-color:${tag.color}"
+          style="--tag-color:${safeColor(tag.color)}"
         >
           <span></span>
           ${escapeHtml(tag.name)}
@@ -569,7 +569,6 @@ export function selectEventTag(tagId) {
   const calendarId = els.eventCalendar.value || state.activeCalendarId;
   const tag = findTag(tagId) || defaultTagFor(calendarId);
   els.eventTagId.value = tag?.id || '';
-  console.log('[tag] selectEventTag', { tagId, resolved: tag?.id, calendarId });
   renderEventTagOptions(tag?.id || null);
 }
 
@@ -702,21 +701,6 @@ export function showToast(message) {
   }, 3200);
 }
 
-function visibleEventsForRender() {
-  const query = state.search.trim().toLowerCase();
-  return state.events.filter((event) => {
-    const matchesCalendar =
-      !state.activeCalendarId || event.calendar_id === state.activeCalendarId;
-    const matchesTag =
-      !event.tag_id || state.selectedTagIds.size === 0 || state.selectedTagIds.has(event.tag_id);
-    const matchesSearch =
-      !query ||
-      event.title.toLowerCase().includes(query) ||
-      (event.description || '').toLowerCase().includes(query);
-    return matchesCalendar && matchesTag && matchesSearch;
-  });
-}
-
 function renderMonth() {
   const today = new Date();
   const gridStart = startOfMonthGrid(state.selectedDate);
@@ -725,7 +709,7 @@ function renderMonth() {
   els.calendarGrid.className = 'calendar-grid month-grid';
   els.calendarGrid.innerHTML = weekHeaderHtml();
   days.forEach((day) => {
-    const dayEvents = visibleEventsForRender().filter((event) => eventOccursOn(event, day));
+    const dayEvents = visibleEvents().filter((event) => eventOccursOn(event, day));
     const cell = document.createElement('button');
     cell.type = 'button';
     cell.className = `month-cell${sameDay(day, today) ? ' today' : ''}${
@@ -739,7 +723,7 @@ function renderMonth() {
           .slice(0, 3)
           .map(
             (event) => `
-              <span class="event-pill ${eventPillClass(event, day)}" draggable="true" data-event-id="${event.id}" style="--event-color:${eventColor(event)}">
+              <span class="event-pill ${eventPillClass(event, day)}" draggable="true" data-event-id="${event.id}" style="--event-color:${safeColor(eventColor(event))}">
                 ${escapeHtml(event.title)}
               </span>
             `,
@@ -754,11 +738,11 @@ function renderMonth() {
 
 function renderDayDetail(date) {
   const selected = startOfDay(date);
-  const dayEvents = visibleEventsForRender().filter((event) => eventOccursOn(event, selected));
+  const dayEvents = visibleEvents().filter((event) => eventOccursOn(event, selected));
   const activeEvents = dayEvents.filter((event) => !event.completed);
   const tasks = dayEvents.filter((event) => event.completed || event.title.toLowerCase().startsWith('task:'));
   const otherEvents = activeEvents.filter((event) => !event.title.toLowerCase().startsWith('task:'));
-  const upcoming = visibleEventsForRender()
+  const upcoming = visibleEvents()
     .filter((event) => new Date(event.starts_at) > endOfDay(selected))
     .slice(0, 3);
 
@@ -837,7 +821,7 @@ function renderDayDetailList(events, emptyText) {
         .map(
           (event) => `
             <button class="day-detail-item ${event.completed ? 'completed' : ''}" type="button" data-event-id="${event.id}">
-              <span style="--event-color:${eventColor(event)}"></span>
+              <span style="--event-color:${safeColor(eventColor(event))}"></span>
               <strong>${escapeHtml(event.title)}</strong>
               <small>${formatEventTime(event)} - ${escapeHtml(eventTagLabel(event))}</small>
             </button>
@@ -865,7 +849,7 @@ function renderWeek() {
 }
 
 function renderWeekListDay(day) {
-  const dayEvents = visibleEventsForRender().filter((event) => eventOccursOn(event, day));
+  const dayEvents = visibleEvents().filter((event) => eventOccursOn(event, day));
   const label = day.toLocaleDateString(undefined, {
     weekday: 'short',
     month: 'short',
@@ -889,7 +873,7 @@ function renderWeekListDay(day) {
                       type="button"
                       data-event-id="${event.id}"
                     >
-                      <span style="--event-color:${eventColor(event)}"></span>
+                      <span style="--event-color:${safeColor(eventColor(event))}"></span>
                       <strong>${escapeHtml(event.title)}</strong>
                       <small>${formatEventTime(event)}</small>
                     </button>
@@ -916,7 +900,7 @@ function renderDay() {
 }
 
 function renderTimeColumn(day, label) {
-  const dayEvents = visibleEventsForRender().filter((event) => eventOccursOn(event, day));
+  const dayEvents = visibleEvents().filter((event) => eventOccursOn(event, day));
   return `
     <section class="time-column" data-date="${dateKey(day)}">
       <header>${label}</header>
@@ -938,7 +922,7 @@ function renderPositionedEvent(event) {
       class="time-event"
       draggable="true"
       data-event-id="${event.id}"
-      style="--event-color:${eventColor(event)}; --top:${top}%; --height:${height}%"
+      style="--event-color:${safeColor(eventColor(event))}; --top:${top}%; --height:${height}%"
       type="button"
     >
       <strong>${escapeHtml(event.title)}</strong>
@@ -956,7 +940,10 @@ function weekHeaderHtml() {
 function defaultStart(date) {
   const start = startOfDay(date);
   const now = new Date();
-  if (sameDay(start, now)) {
+  if (sameDay(start, now) && now.getHours() < 22) {
+    // "+1 hour" defaults that would cross midnight silently roll into the next
+    // day's 00:00, which is never what the user means. Late in the evening,
+    // skip the snap-to-next-hour and use 09:00 of the same day.
     start.setHours(now.getHours() + 1, 0, 0, 0);
   } else {
     start.setHours(9, 0, 0, 0);
@@ -988,15 +975,6 @@ function eventPillClass(event, day) {
   if (new Date(event.ends_at) > endOfDay(day)) classes.push('continues-right');
   if (event.completed) classes.push('completed');
   return classes.join(' ');
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
 }
 
 function toCamel(id) {

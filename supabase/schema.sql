@@ -22,7 +22,7 @@ create table public.calendars (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
   name text not null check (char_length(name) between 1 and 80),
-  color text not null default '#92c5fc',
+  color text not null default '#92c5fc' check (color ~ '^#[0-9a-fA-F]{6}$'),
   archived_at timestamptz,
   created_at timestamptz not null default now()
 );
@@ -46,7 +46,7 @@ create table public.tags (
   calendar_id uuid not null references public.calendars(id) on delete cascade,
   user_id uuid not null references auth.users(id) on delete cascade,
   name text not null check (char_length(name) between 1 and 32),
-  color text not null default '#92c5fc',
+  color text not null default '#92c5fc' check (color ~ '^#[0-9a-fA-F]{6}$'),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (calendar_id, name)
@@ -89,6 +89,7 @@ create index calendar_members_user_id_idx on public.calendar_members(user_id);
 create index profiles_email_idx on public.profiles(lower(email));
 create index tags_calendar_id_idx on public.tags(calendar_id);
 create index events_calendar_time_idx on public.events(calendar_id, starts_at, ends_at);
+create index events_tag_id_idx on public.events(tag_id);
 create index quick_add_templates_user_id_idx on public.quick_add_templates(user_id);
 
 alter table public.calendars
