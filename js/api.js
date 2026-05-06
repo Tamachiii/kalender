@@ -40,6 +40,32 @@ export async function getSession() {
   return data.session;
 }
 
+// Force a token refresh, racing against a timeout. The Supabase client's
+// refresh flow can hang indefinitely on iOS PWA wake (the internal refresh
+// timer queues a request that never completes after the JS engine was
+// frozen), and any subsequent API call queues behind it, freezing every
+// write/refetch in the UI. Surfacing the timeout lets callers fall back to
+// the cached session and recover instead of hanging forever.
+export async function refreshSession(timeoutMs = 5000) {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(
+      () => reject(new Error('Auth refresh timed out')),
+      timeoutMs,
+    );
+  });
+  try {
+    const result = await Promise.race([
+      supabase.auth.refreshSession(),
+      timeout,
+    ]);
+    if (result?.error) throw result.error;
+    return result?.data?.session || null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 export function onAuthStateChange(callback) {
   return supabase.auth.onAuthStateChange(callback);
 }
