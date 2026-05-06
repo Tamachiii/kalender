@@ -14,7 +14,6 @@ import {
   getSession,
   onAuthStateChange,
   reassignEventsTag,
-  refreshSession,
   removeChannel,
   saveEvent,
   setEventCompleted,
@@ -1101,20 +1100,7 @@ async function recoverAfterResume() {
   const activeCalendarId = state.activeCalendarId;
 
   try {
-    // Force a token refresh on resume. Without this, the Supabase client's
-    // internal refresh state can be stuck after iOS suspends/restores the
-    // PWA, and the next write/fetch hangs forever — the user sees the tab
-    // highlight on Month/Week/Day but no view change, and Save freezes.
-    // If the refresh times out we keep the cached session so a flaky
-    // network doesn't appear to log the user out; the next API call will
-    // surface a real auth failure if the token is actually dead.
-    let session;
-    try {
-      session = await refreshSession();
-    } catch (error) {
-      console.warn('[resume] auth refresh failed; keeping cached session', error?.message || error);
-      session = state.session || (await getSession());
-    }
+    const session = await getSession();
     state.session = session;
     setAuthenticatedView(Boolean(session));
 

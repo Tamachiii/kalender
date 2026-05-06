@@ -40,34 +40,37 @@ export async function getSession() {
   return data.session;
 }
 
-// Force a token refresh, racing against a timeout. The Supabase client's
-// refresh flow can hang indefinitely on iOS PWA wake (the internal refresh
-// timer queues a request that never completes after the JS engine was
-// frozen), and any subsequent API call queues behind it, freezing every
-// write/refetch in the UI. Surfacing the timeout lets callers fall back to
-// the cached session and recover instead of hanging forever.
-export async function refreshSession(timeoutMs = 5000) {
+export function onAuthStateChange(callback) {
+  return supabase.auth.onAuthStateChange(callback);
+}
+
+// Race a Supabase call against a timeout so the UI never locks behind a
+// promise that never resolves. The wrapped promise still runs to
+// completion in the background — the caller just stops waiting. Used for
+// user-visible writes; without this, a stuck Supabase client (e.g. after
+// an iOS PWA wake or a corrupted refresh-token chain) freezes the modal
+// indefinitely with the form in aria-busy. The thrown message is surfaced
+// in the toast so the user knows to retry or sign out and back in.
+const SUPABASE_OP_TIMEOUT_MS = 10000;
+
+async function withTimeout(promise, label) {
   let timeoutId;
   const timeout = new Promise((_, reject) => {
     timeoutId = setTimeout(
-      () => reject(new Error('Auth refresh timed out')),
-      timeoutMs,
+      () =>
+        reject(
+          new Error(
+            `${label} timed out — check your connection, or sign out and back in to clear a stale session.`,
+          ),
+        ),
+      SUPABASE_OP_TIMEOUT_MS,
     );
   });
   try {
-    const result = await Promise.race([
-      supabase.auth.refreshSession(),
-      timeout,
-    ]);
-    if (result?.error) throw result.error;
-    return result?.data?.session || null;
+    return await Promise.race([promise, timeout]);
   } finally {
     clearTimeout(timeoutId);
   }
-}
-
-export function onAuthStateChange(callback) {
-  return supabase.auth.onAuthStateChange(callback);
 }
 
 export async function fetchCalendars() {
@@ -274,38 +277,46 @@ export async function saveEvent(event) {
   };
 
   if (event.id) {
-    const { data, error } = await supabase
-      .from('events')
-      .update(payload)
-      .eq('id', event.id)
-      .select()
-      .single();
+    const { data, error } = await withTimeout(
+      supabase
+        .from('events')
+        .update(payload)
+        .eq('id', event.id)
+        .select()
+        .single(),
+      'Save',
+    );
     if (error) throw error;
     return data;
   }
 
-  const { data, error } = await supabase
-    .from('events')
-    .insert(payload)
-    .select()
-    .single();
+  const { data, error } = await withTimeout(
+    supabase.from('events').insert(payload).select().single(),
+    'Save',
+  );
 
   if (error) throw error;
   return data;
 }
 
 export async function deleteEvent(id) {
-  const { error } = await supabase.from('events').delete().eq('id', id);
+  const { error } = await withTimeout(
+    supabase.from('events').delete().eq('id', id),
+    'Delete',
+  );
   if (error) throw error;
 }
 
 export async function setEventCompleted(id, completed) {
-  const { data, error } = await supabase
-    .from('events')
-    .update({ completed })
-    .eq('id', id)
-    .select()
-    .single();
+  const { data, error } = await withTimeout(
+    supabase
+      .from('events')
+      .update({ completed })
+      .eq('id', id)
+      .select()
+      .single(),
+    'Update',
+  );
 
   if (error) throw error;
   return data;
