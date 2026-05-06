@@ -361,3 +361,40 @@ export function subscribeToWorkspace(calendarIds, callbacks) {
 export async function removeChannel(channel) {
   if (channel) await supabase.removeChannel(channel);
 }
+
+// Pause/resume Supabase's auto-refresh loop around mobile background.
+// iOS suspends the JS engine when the PWA goes to the home screen, which
+// freezes the auto-refresh timer mid-flight; on resume the client can
+// end up with a refresh promise that never resolves, queuing every read
+// and write behind it. Stopping the loop on hidden and starting it on
+// visible cleans up that timer state. These are no-ops if the loop is
+// already in the requested state, so calling them on every visibility
+// change is safe.
+export function pauseAutoRefresh() {
+  try {
+    supabase.auth.stopAutoRefresh();
+  } catch (error) {
+    console.warn('[auth] stopAutoRefresh threw', error);
+  }
+}
+
+export function resumeAutoRefresh() {
+  try {
+    supabase.auth.startAutoRefresh();
+  } catch (error) {
+    console.warn('[auth] startAutoRefresh threw', error);
+  }
+}
+
+// Force-close the realtime websocket. iOS silently kills the socket in
+// the background and the Supabase client doesn't notice; the next channel
+// subscription is then attached to a zombie connection that never fires
+// events and may be holding an iOS connection slot. Calling this on
+// resume gives us a clean slate before subscribing again.
+export function resetRealtime() {
+  try {
+    supabase.realtime.disconnect();
+  } catch (error) {
+    console.warn('[realtime] disconnect threw', error);
+  }
+}

@@ -13,8 +13,11 @@ import {
   fetchTags,
   getSession,
   onAuthStateChange,
+  pauseAutoRefresh,
   reassignEventsTag,
   removeChannel,
+  resetRealtime,
+  resumeAutoRefresh,
   saveEvent,
   setEventCompleted,
   shareCalendar,
@@ -1074,7 +1077,21 @@ function bindSwipeNavigation() {
 
 function bindLifecycleEvents() {
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') recoverAfterResume();
+    if (document.visibilityState === 'visible') {
+      recoverAfterResume();
+    } else {
+      // Proactively shut things down before iOS suspends the JS engine.
+      // Stopping auto-refresh prevents the in-flight refresh promise from
+      // being frozen mid-flight, and tearing down the realtime channel
+      // means we don't come back to a zombie websocket that the Supabase
+      // client thinks is still connected. Both are rebuilt by
+      // recoverAfterResume() on the next visible event.
+      pauseAutoRefresh();
+      if (state.realtimeChannel) {
+        removeChannel(state.realtimeChannel);
+        state.realtimeChannel = null;
+      }
+    }
   });
   window.addEventListener('focus', recoverAfterResume);
   window.addEventListener('offline', () => showToast('Offline. Changes will need a connection.'));
@@ -1100,6 +1117,15 @@ async function recoverAfterResume() {
   const activeCalendarId = state.activeCalendarId;
 
   try {
+    // Force-close any leftover realtime websocket from before the
+    // suspend, then restart the auth auto-refresh loop. Without this,
+    // iOS PWA wake leaves the Supabase client with a stuck refresh
+    // promise (every subsequent read/write queues behind it) and a
+    // dead websocket that holds an iOS connection slot. Both are
+    // rebuilt below; this is the cleanup pass that makes that safe.
+    resetRealtime();
+    resumeAutoRefresh();
+
     const session = await getSession();
     state.session = session;
     setAuthenticatedView(Boolean(session));
